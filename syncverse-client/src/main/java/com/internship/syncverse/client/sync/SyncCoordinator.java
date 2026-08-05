@@ -159,7 +159,11 @@ public final class SyncCoordinator implements AutoCloseable {
             if (retry != null
                     && !retry.operation().filename().equals(
                     retry.response().acceptedFilename())) {
-                latestLocal.remove(retry.operation().filename());
+                FileSnapshot current = latestLocal.get(retry.operation().filename());
+                if (current != null
+                        && Objects.equals(current.checksum(), retry.operation().checksum())) {
+                    latestLocal.remove(retry.operation().filename());
+                }
             }
             reconcile(base, latestLocal, revisions);
             return null;

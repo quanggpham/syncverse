@@ -278,6 +278,82 @@ class ReconnectE2EIT {
     }
 
     @Test
+    void editAfterDroppedConflictResponseIsPreservedAsANewConflict()
+            throws Exception {
+        String filename = "edited-after-conflict.txt";
+        Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("edited-alice"));
+        Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("edited-bob"));
+        Files.writeString(aliceWorkspace.resolve(filename), "base");
+        CountingApi aliceApi = new CountingApi(httpApi());
+        CountingApi bobApi = new CountingApi(httpApi());
+        RegisterResponse aliceSession = aliceApi.register("EditedConflict_Alice");
+        RegisterResponse bobSession = bobApi.register("EditedConflict_Bob");
+        AtomicClientStateStore bobStore = new AtomicClientStateStore(bobWorkspace);
+        SyncCoordinator alice = coordinator(
+                aliceWorkspace, aliceApi, aliceSession, "EditedConflict_Alice");
+        SyncCoordinator bob = new SyncCoordinator(
+                bobWorkspace, bobApi, bobSession::sessionId, bobStore,
+                ClientState.empty("EditedConflict_Bob"));
+        SyncCoordinator firstRecovery = null;
+        SyncCoordinator secondRecovery = null;
+        try {
+            alice.start();
+            bob.start();
+            eventually(Duration.ofSeconds(5), () -> Files.exists(bobWorkspace.resolve(filename)));
+            bob.close();
+
+            long changesBeforeAliceUpdate = changes.count();
+            Files.writeString(aliceWorkspace.resolve(filename), "alice-new");
+            eventually(Duration.ofSeconds(5), () ->
+                    aliceApi.fileChanges.get() == 2
+                            && changes.count() == changesBeforeAliceUpdate + 1);
+            Files.writeString(bobWorkspace.resolve(filename), "bob-pending");
+            long changesBeforeConflicts = changes.count();
+            long receiptsBeforeConflicts = receipts.count();
+
+            ClientState offline = bobStore.load().orElseThrow();
+            DropFirstResponseApi droppingApi = new DropFirstResponseApi(httpApi());
+            RegisterResponse firstSession = droppingApi.reconnect(
+                    "EditedConflict_Bob", offline.lastSeenGlobalVersion());
+            firstRecovery = new SyncCoordinator(
+                    bobWorkspace, droppingApi, firstSession::sessionId, bobStore, offline);
+            firstRecovery.start(firstSession.currentGlobalVersion(), ignored -> { });
+            eventually(Duration.ofSeconds(5), () ->
+                    droppingApi.attempts.get() == 1
+                            && bobStore.load().orElseThrow().pendingOperation() != null);
+            firstRecovery.close();
+
+            Files.writeString(bobWorkspace.resolve(filename), "bob-newer");
+            ClientState pending = bobStore.load().orElseThrow();
+            CountingApi recoveredApi = new CountingApi(httpApi());
+            RegisterResponse recoveredSession = recoveredApi.reconnect(
+                    "EditedConflict_Bob", pending.lastSeenGlobalVersion());
+            secondRecovery = new SyncCoordinator(
+                    bobWorkspace, recoveredApi, recoveredSession::sessionId, bobStore, pending);
+            secondRecovery.start(recoveredSession.currentGlobalVersion(), ignored -> { });
+            SyncCoordinator active = secondRecovery;
+            eventually(Duration.ofSeconds(5), () ->
+                    active.state().pendingOperation() == null
+                            && Files.readString(bobWorkspace.resolve(filename)).equals("alice-new")
+                            && conflictContents(bobWorkspace).contains("bob-pending")
+                            && conflictContents(bobWorkspace).contains("bob-newer"));
+
+            assertEquals(2, recoveredApi.fileChanges.get());
+            assertEquals(changesBeforeConflicts + 2, changes.count());
+            assertEquals(receiptsBeforeConflicts + 2, receipts.count());
+        } finally {
+            alice.close();
+            bob.close();
+            if (firstRecovery != null) {
+                firstRecovery.close();
+            }
+            if (secondRecovery != null) {
+                secondRecovery.close();
+            }
+        }
+    }
+
+    @Test
     void editDuringDeltaFetchIsReconciledFromLatestLocalBytes() throws Exception {
         String filename = "during-fetch.txt";
         long changesBefore = changes.count();
@@ -334,6 +410,20 @@ class ReconnectE2EIT {
                             .contains(".conflict-"))
                     .findFirst();
             return conflict.isPresent() ? Files.readString(conflict.orElseThrow()) : null;
+        }
+    }
+
+    private static java.util.List<String> conflictContents(Path workspace) throws Exception {
+        try (var files = Files.list(workspace)) {
+            return files.filter(path -> path.getFileName().toString().contains(".conflict-"))
+                    .map(path -> {
+                        try {
+                            return Files.readString(path);
+                        } catch (java.io.IOException exception) {
+                            throw new java.io.UncheckedIOException(exception);
+                        }
+                    })
+                    .toList();
         }
     }
 
