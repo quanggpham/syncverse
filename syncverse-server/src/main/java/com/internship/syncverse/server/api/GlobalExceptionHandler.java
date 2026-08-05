@@ -1,0 +1,43 @@
+package com.internship.syncverse.server.api;
+
+import com.internship.syncverse.common.dto.ApiError;
+import com.internship.syncverse.server.session.InvalidClientNameException;
+import com.internship.syncverse.server.session.SessionExpiredException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.time.Clock;
+import java.util.UUID;
+
+@RestControllerAdvice
+public final class GlobalExceptionHandler {
+
+    private final Clock clock;
+
+    public GlobalExceptionHandler(Clock clock) {
+        this.clock = clock;
+    }
+
+    @ExceptionHandler({
+            InvalidClientNameException.class,
+            InvalidRequestException.class,
+            IllegalArgumentException.class,
+            HttpMessageNotReadableException.class
+    })
+    ResponseEntity<ApiError> invalidRequest(Exception exception) {
+        return error(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", exception.getMessage());
+    }
+
+    @ExceptionHandler(SessionExpiredException.class)
+    ResponseEntity<ApiError> sessionExpired(SessionExpiredException exception) {
+        return error(HttpStatus.GONE, "SESSION_EXPIRED", exception.getMessage());
+    }
+
+    private ResponseEntity<ApiError> error(HttpStatus status, String code, String message) {
+        ApiError error = new ApiError(code, message, UUID.randomUUID().toString(), clock.instant());
+        return ResponseEntity.status(status).body(error);
+    }
+}
