@@ -19,3 +19,6 @@ Thumbs.db
 *.class
 *.jar
 !src/main/resources/**/*.jar
+
+# Local brainstorming artifacts
+.superpowers/
