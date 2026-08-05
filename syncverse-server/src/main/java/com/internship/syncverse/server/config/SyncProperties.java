@@ -8,5 +8,6 @@ import java.time.Duration;
 public record SyncProperties(
         String serverName,
         Duration heartbeatInterval,
-        Duration sessionExpiry) {
+        Duration sessionExpiry,
+        Duration longPollTimeout) {
 }

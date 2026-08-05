@@ -1,6 +1,8 @@
 package com.internship.syncverse.server.api;
 
 import com.internship.syncverse.server.SyncVerseServer;
+import com.internship.syncverse.common.protocol.FileOperation;
+import com.internship.syncverse.server.persistence.ChangeLogRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,6 +51,9 @@ class RegistrationApiIT {
     @Autowired
     private MutableClock clock;
 
+    @Autowired
+    private ChangeLogRepository changes;
+
     @Test
     void registerAndHeartbeatSucceed() throws Exception {
         HttpResponse<String> registration = post("/api/register",
@@ -60,6 +65,19 @@ class RegistrationApiIT {
 
         assertEquals(201, registration.statusCode());
         assertEquals(204, heartbeat.statusCode());
+    }
+
+    @Test
+    void registerReportsCurrentGlobalVersion() throws Exception {
+        long version = changes.append(
+                "existing.txt", FileOperation.CREATE, new byte[]{1},
+                "a".repeat(64), 1, "Alice_Node", clock.instant());
+
+        HttpResponse<String> response = post("/api/register",
+                "{\"messageType\":\"HELLO\",\"clientName\":\"Version_Node\"}");
+
+        assertEquals(201, response.statusCode());
+        assertTrue(response.body().contains("\"currentGlobalVersion\":" + version));
     }
 
     @Test

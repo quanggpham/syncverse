@@ -4,6 +4,7 @@ import com.internship.syncverse.common.dto.FileChangeRequest;
 import com.internship.syncverse.common.dto.FileChangeResponse;
 import com.internship.syncverse.common.protocol.ChangeOutcome;
 import com.internship.syncverse.common.protocol.FileOperation;
+import com.internship.syncverse.server.delta.ChangeNotifier;
 import com.internship.syncverse.server.persistence.ChangeLogRepository;
 import com.internship.syncverse.server.persistence.FileState;
 import com.internship.syncverse.server.persistence.FileStateRepository;
@@ -12,6 +13,7 @@ import com.internship.syncverse.server.persistence.OperationReceiptRepository;
 import com.internship.syncverse.server.session.ClientSession;
 import com.internship.syncverse.server.session.SessionService;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
@@ -31,7 +33,9 @@ public final class SyncService {
     private final GlobalMutationLock mutationLock;
     private final TransactionTemplate transactions;
     private final Clock clock;
+    private final ChangeNotifier notifier;
 
+    @Autowired
     public SyncService(
             SessionService sessions,
             FileStateRepository files,
@@ -41,7 +45,8 @@ public final class SyncService {
             ConflictNameGenerator conflictNames,
             GlobalMutationLock mutationLock,
             TransactionTemplate transactions,
-            Clock clock) {
+            Clock clock,
+            ChangeNotifier notifier) {
         this.sessions = sessions;
         this.files = files;
         this.changes = changes;
@@ -51,15 +56,36 @@ public final class SyncService {
         this.mutationLock = mutationLock;
         this.transactions = transactions;
         this.clock = clock;
+        this.notifier = notifier;
+    }
+
+    SyncService(
+            SessionService sessions,
+            FileStateRepository files,
+            ChangeLogRepository changes,
+            OperationReceiptRepository receipts,
+            FileChangeValidator validator,
+            ConflictNameGenerator conflictNames,
+            GlobalMutationLock mutationLock,
+            TransactionTemplate transactions,
+            Clock clock) {
+        this(sessions, files, changes, receipts, validator, conflictNames,
+                mutationLock, transactions, clock, new ChangeNotifier(changes));
     }
 
     public FileChangeResponse apply(FileChangeRequest request) {
         ClientSession session = sessions.requireActive(
                 request == null ? null : request.sessionId());
         byte[] content = validator.validate(request);
-        return mutationLock.execute(() -> Objects.requireNonNull(
-                transactions.execute(status -> applyInTransaction(request, content, session)),
-                "File change transaction returned no response"));
+        return mutationLock.execute(() -> {
+            FileChangeResponse response = Objects.requireNonNull(
+                    transactions.execute(status -> applyInTransaction(request, content, session)),
+                    "File change transaction returned no response");
+            if (response.globalVersion() != null) {
+                notifier.signalCommitted(response.globalVersion());
+            }
+            return response;
+        });
     }
 
     private FileChangeResponse applyInTransaction(

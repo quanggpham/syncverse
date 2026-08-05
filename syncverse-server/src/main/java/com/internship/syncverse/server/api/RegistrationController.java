@@ -6,6 +6,7 @@ import com.internship.syncverse.common.dto.RegisterResponse;
 import com.internship.syncverse.common.protocol.MessageType;
 import com.internship.syncverse.server.session.ClientSession;
 import com.internship.syncverse.server.session.SessionService;
+import com.internship.syncverse.server.persistence.ChangeLogRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,9 +19,11 @@ import org.springframework.web.bind.annotation.RestController;
 public final class RegistrationController {
 
     private final SessionService sessions;
+    private final ChangeLogRepository changes;
 
-    public RegistrationController(SessionService sessions) {
+    public RegistrationController(SessionService sessions, ChangeLogRepository changes) {
         this.sessions = sessions;
+        this.changes = changes;
     }
 
     @PostMapping("/register")
@@ -37,8 +40,9 @@ public final class RegistrationController {
                 request.clientName(), request.lastSeenGlobalVersion()));
     }
 
-    private static RegisterResponse response(ClientSession session) {
-        return new RegisterResponse(session.clientName(), session.sessionId(), 0);
+    private RegisterResponse response(ClientSession session) {
+        return new RegisterResponse(
+                session.clientName(), session.sessionId(), changes.maxVersion());
     }
 
     private static void requireMessageType(MessageType actual, MessageType expected) {
