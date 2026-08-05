@@ -16,6 +16,7 @@ public final class ConnectionManager {
     private final String clientName;
     private final ScheduledExecutorService scheduler;
     private final Duration heartbeatInterval;
+    private final Runnable firstSessionAvailable;
     private final RetryPolicy retryPolicy = RetryPolicy.exponential(
             Duration.ofSeconds(1), Duration.ofSeconds(30));
 
@@ -30,10 +31,20 @@ public final class ConnectionManager {
             String clientName,
             ScheduledExecutorService scheduler,
             Duration heartbeatInterval) {
+        this(serverApi, clientName, scheduler, heartbeatInterval, () -> { });
+    }
+
+    public ConnectionManager(
+            ServerApiClient serverApi,
+            String clientName,
+            ScheduledExecutorService scheduler,
+            Duration heartbeatInterval,
+            Runnable firstSessionAvailable) {
         this.serverApi = serverApi;
         this.clientName = clientName;
         this.scheduler = scheduler;
         this.heartbeatInterval = heartbeatInterval;
+        this.firstSessionAvailable = firstSessionAvailable;
         if (heartbeatInterval.isZero() || heartbeatInterval.isNegative()) {
             throw new IllegalArgumentException("Heartbeat interval must be positive");
         }
@@ -113,8 +124,12 @@ public final class ConnectionManager {
     }
 
     private void accept(RegisterResponse response, ClientMode nextMode) {
+        boolean firstSession = sessionId == null;
         sessionId = response.sessionId();
         mode = nextMode;
+        if (firstSession) {
+            firstSessionAvailable.run();
+        }
     }
 
     private void runScheduledTick() {

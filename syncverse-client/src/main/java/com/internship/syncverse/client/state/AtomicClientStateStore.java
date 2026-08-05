@@ -32,14 +32,14 @@ public final class AtomicClientStateStore {
         return path;
     }
 
-    public Optional<ClientState> load() throws IOException {
+    public synchronized Optional<ClientState> load() throws IOException {
         if (Files.notExists(path)) {
             return Optional.empty();
         }
         return Optional.of(objectMapper.readValue(path.toFile(), ClientState.class));
     }
 
-    public void save(ClientState state) throws IOException {
+    public synchronized void save(ClientState state) throws IOException {
         try {
             objectMapper.writeValue(temporaryPath.toFile(), state);
             mover.replace(temporaryPath, path);

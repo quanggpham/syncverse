@@ -4,6 +4,7 @@ import com.internship.syncverse.client.http.ServerApiClient;
 import com.internship.syncverse.client.http.ServerApiException;
 import com.internship.syncverse.client.state.AtomicClientStateStore;
 import com.internship.syncverse.client.state.ClientState;
+import com.internship.syncverse.client.state.FileManifestEntry;
 import com.internship.syncverse.client.state.PendingOperation;
 import com.internship.syncverse.common.dto.FileChangeRequest;
 import com.internship.syncverse.common.dto.FileChangeResponse;
@@ -64,6 +65,75 @@ class UploadServiceTest {
                         .submit(UUID.randomUUID(), initial, operation));
 
         assertEquals(operation, store.load().orElseThrow().pendingOperation());
+    }
+
+    @Test
+    void conflictAckDoesNotClaimConflictFileAlreadyExistsLocally() throws Exception {
+        AtomicClientStateStore store = store();
+        ClientState initial = new ClientState(
+                1, "Bob_Node", 5,
+                java.util.Map.of("note.txt", new FileManifestEntry("c".repeat(64), 5, false)),
+                null);
+        PendingOperation operation = new PendingOperation(
+                UUID.randomUUID(), "note.txt", FileOperation.UPDATE, 5,
+                "a".repeat(64), "Ym9iLWJ5dGVz");
+        ServerApiClient api = new StubApi() {
+            @Override
+            public FileChangeResponse fileChange(FileChangeRequest request) {
+                return new FileChangeResponse(
+                        ChangeOutcome.CONFLICT_COPY_CREATED,
+                        "note.txt", "note.conflict-Bob_Node-a1b2c3d4.txt", 8L, 8);
+            }
+        };
+
+        ClientState result = new UploadService(api, store)
+                .submit(UUID.randomUUID(), initial, operation);
+
+        assertEquals(initial.manifest(), result.manifest());
+        assertNull(result.pendingOperation());
+    }
+
+    @Test
+    void staleDeleteAckPreventsAutomaticRetryUntilRemoteDeltaRestoresFile() throws Exception {
+        AtomicClientStateStore store = store();
+        ClientState initial = new ClientState(
+                1, "Bob_Node", 5,
+                java.util.Map.of("note.txt", new FileManifestEntry("c".repeat(64), 5, false)),
+                null);
+        PendingOperation operation = new PendingOperation(
+                UUID.randomUUID(), "note.txt", FileOperation.DELETE, 5, null, null);
+        ServerApiClient api = new StubApi() {
+            @Override
+            public FileChangeResponse fileChange(FileChangeRequest request) {
+                return new FileChangeResponse(
+                        ChangeOutcome.CONFLICT_REJECTED, "note.txt", "note.txt", null, 8);
+            }
+        };
+
+        ClientState result = new UploadService(api, store)
+                .submit(UUID.randomUUID(), initial, operation);
+
+        assertNull(result.pendingOperation());
+        assertEquals(8, result.manifest().get("note.txt").fileVersion());
+        assertEquals(true, result.manifest().get("note.txt").deleted());
+    }
+
+    @Test
+    void permanentFailureClearsUnretryablePendingOperation() throws Exception {
+        AtomicClientStateStore store = store();
+        ClientState initial = ClientState.empty("Alice_Node");
+        ServerApiClient api = new StubApi() {
+            @Override
+            public FileChangeResponse fileChange(FileChangeRequest request)
+                    throws ServerApiException {
+                throw ServerApiException.permanent("invalid");
+            }
+        };
+
+        assertThrows(ServerApiException.class, () -> new UploadService(api, store)
+                .submit(UUID.randomUUID(), initial, operation()));
+
+        assertNull(store.load().orElseThrow().pendingOperation());
     }
 
     private AtomicClientStateStore store() throws Exception {

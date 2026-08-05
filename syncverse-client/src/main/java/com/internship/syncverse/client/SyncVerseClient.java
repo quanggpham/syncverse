@@ -4,7 +4,6 @@ import com.internship.syncverse.client.cli.CliArguments;
 import com.internship.syncverse.client.http.ServerApiClient;
 import com.internship.syncverse.client.state.AtomicClientStateStore;
 import com.internship.syncverse.client.state.ClientState;
-import com.internship.syncverse.client.sync.ClientMode;
 import com.internship.syncverse.client.sync.ConnectionManager;
 import com.internship.syncverse.client.sync.SyncCoordinator;
 import org.slf4j.Logger;
@@ -14,6 +13,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class SyncVerseClient {
 
@@ -34,26 +34,28 @@ public final class SyncVerseClient {
             throw new IllegalArgumentException(
                     "Workspace state belongs to client " + state.clientName());
         }
+        AtomicReference<SyncCoordinator> coordinatorReference = new AtomicReference<>();
         ConnectionManager connection = new ConnectionManager(
                 serverApi,
                 arguments.clientName(),
                 Executors.newSingleThreadScheduledExecutor(),
-                Duration.ofSeconds(4));
+                Duration.ofSeconds(4),
+                () -> {
+                    try {
+                        coordinatorReference.get().start();
+                    } catch (Exception exception) {
+                        throw new IllegalStateException("Cannot start synchronization", exception);
+                    }
+                });
 
-        connection.start();
-        SyncCoordinator coordinator = null;
-        if (connection.mode() == ClientMode.ONLINE) {
-            coordinator = new SyncCoordinator(
-                    arguments.workspace(), serverApi, connection::sessionId, stateStore, state);
-            coordinator.start();
-        }
-        SyncCoordinator runningCoordinator = coordinator;
+        SyncCoordinator coordinator = new SyncCoordinator(
+                arguments.workspace(), serverApi, connection::sessionId, stateStore, state);
+        coordinatorReference.set(coordinator);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            if (runningCoordinator != null) {
-                runningCoordinator.close();
-            }
+            coordinator.close();
             connection.shutdown();
         }, "syncverse-shutdown"));
+        connection.start();
         LOGGER.info("SyncVerse client {} started for workspace {} using server {}",
                 arguments.clientName(), arguments.workspace(), serverUri);
     }

@@ -7,6 +7,7 @@ import com.internship.syncverse.client.state.ClientState;
 import com.internship.syncverse.client.state.FileManifestEntry;
 import com.internship.syncverse.client.state.PendingOperation;
 import com.internship.syncverse.common.dto.FileChangeResponse;
+import com.internship.syncverse.common.protocol.ChangeOutcome;
 import com.internship.syncverse.common.protocol.FileOperation;
 
 import java.io.IOException;
@@ -38,12 +39,26 @@ public final class UploadService {
                 operation);
         stateStore.save(pendingState);
 
-        FileChangeResponse response = serverApi.fileChange(operation.request(sessionId));
+        FileChangeResponse response;
+        try {
+            response = serverApi.fileChange(operation.request(sessionId));
+        } catch (ServerApiException exception) {
+            if (exception.kind() == ServerApiException.Kind.PERMANENT) {
+                stateStore.save(withoutPending(state));
+            }
+            throw exception;
+        }
         HashMap<String, FileManifestEntry> manifest = new HashMap<>(state.manifest());
-        manifest.put(response.acceptedFilename(), new FileManifestEntry(
-                operation.operation() == FileOperation.DELETE ? null : operation.checksum(),
-                response.fileVersion(),
-                operation.operation() == FileOperation.DELETE));
+        if (response.outcome() == ChangeOutcome.APPLIED
+                || response.outcome() == ChangeOutcome.DUPLICATE) {
+            manifest.put(response.acceptedFilename(), new FileManifestEntry(
+                    operation.operation() == FileOperation.DELETE ? null : operation.checksum(),
+                    response.fileVersion(),
+                    operation.operation() == FileOperation.DELETE));
+        } else if (response.outcome() == ChangeOutcome.CONFLICT_REJECTED) {
+            manifest.put(operation.filename(), new FileManifestEntry(
+                    null, response.fileVersion(), true));
+        }
         ClientState acknowledged = new ClientState(
                 state.formatVersion(),
                 state.clientName(),
@@ -52,5 +67,11 @@ public final class UploadService {
                 null);
         stateStore.save(acknowledged);
         return acknowledged;
+    }
+
+    private static ClientState withoutPending(ClientState state) {
+        return new ClientState(
+                state.formatVersion(), state.clientName(), state.lastSeenGlobalVersion(),
+                state.manifest(), null);
     }
 }

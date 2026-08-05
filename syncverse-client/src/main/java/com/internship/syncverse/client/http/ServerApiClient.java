@@ -70,7 +70,7 @@ final class JdkServerApiClient implements ServerApiClient {
     @Override
     public FileChangeResponse fileChange(FileChangeRequest request)
             throws ServerApiException {
-        return post("/api/files/changes", request, 200, FileChangeResponse.class);
+        return post("/api/files/changes", request, FileChangeResponse.class, 200, 409);
     }
 
     @Override
@@ -95,6 +95,12 @@ final class JdkServerApiClient implements ServerApiClient {
 
     private <T> T post(String path, Object body, int expectedStatus, Class<T> responseType)
             throws ServerApiException {
+        return post(path, body, responseType, expectedStatus);
+    }
+
+    private <T> T post(
+            String path, Object body, Class<T> responseType, int... expectedStatuses)
+            throws ServerApiException {
         try {
             HttpRequest request = HttpRequest.newBuilder(serverUri.resolve(path))
                     .header("Content-Type", "application/json")
@@ -102,7 +108,7 @@ final class JdkServerApiClient implements ServerApiClient {
                     .build();
             HttpResponse<String> response = httpClient.send(
                     request, HttpResponse.BodyHandlers.ofString());
-            requireStatus(response, expectedStatus);
+            requireStatus(response, expectedStatuses);
             if (responseType == Void.class) {
                 return null;
             }
@@ -115,11 +121,13 @@ final class JdkServerApiClient implements ServerApiClient {
         }
     }
 
-    private static void requireStatus(HttpResponse<String> response, int expectedStatus)
+    private static void requireStatus(HttpResponse<String> response, int... expectedStatuses)
             throws ServerApiException {
         int status = response.statusCode();
-        if (status == expectedStatus) {
-            return;
+        for (int expectedStatus : expectedStatuses) {
+            if (status == expectedStatus) {
+                return;
+            }
         }
         String message = "Server returned HTTP " + status + ": " + response.body();
         if (status == 410) {

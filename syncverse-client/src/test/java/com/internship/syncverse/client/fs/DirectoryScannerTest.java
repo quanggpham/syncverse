@@ -18,6 +18,7 @@ class DirectoryScannerTest {
     @Test
     void scansOnlyRootRegularFilesWithinDecodedLimit() throws Exception {
         Files.writeString(workspace.resolve("valid.txt"), "hello");
+        Files.writeString(workspace.resolve(".syncverse-123.tmp"), "in-flight-remote-bytes");
         Path child = Files.createDirectory(workspace.resolve("child"));
         Files.writeString(child.resolve("nested.txt"), "ignored");
         Files.write(workspace.resolve("large.bin"), new byte[1_048_577]);
@@ -34,5 +35,6 @@ class DirectoryScannerTest {
         assertEquals("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
                 snapshots.get("valid.txt").checksum());
         assertFalse(snapshots.containsKey("nested.txt"));
+        assertFalse(snapshots.containsKey(".syncverse-123.tmp"));
     }
 }

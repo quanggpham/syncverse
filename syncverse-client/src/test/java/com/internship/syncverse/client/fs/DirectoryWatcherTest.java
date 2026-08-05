@@ -42,6 +42,7 @@ class DirectoryWatcherTest {
                 workspace, changed::add, () -> changed.add("FULL_RESCAN"), scheduler);
 
         watcher.accept(StandardWatchEventKinds.ENTRY_MODIFY, Path.of("child", "nested.txt"));
+        watcher.accept(StandardWatchEventKinds.ENTRY_CREATE, Path.of(".syncverse-123.tmp"));
         watcher.accept(StandardWatchEventKinds.OVERFLOW, null);
         scheduler.runPending();
 

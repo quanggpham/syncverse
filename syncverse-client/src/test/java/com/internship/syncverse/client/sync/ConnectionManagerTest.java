@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -91,6 +92,25 @@ class ConnectionManagerTest {
 
         assertTrue(manager.isStopped());
         assertTrue(scheduler.isShutdown());
+    }
+
+    @Test
+    void initiallyOfflineClientStartsSessionWorkAfterRecovery() {
+        FakeServerApi api = new FakeServerApi();
+        api.failRegister = true;
+        AtomicInteger sessionStarts = new AtomicInteger();
+        ConnectionManager manager = new ConnectionManager(
+                api, "Alice_Node", scheduler, Duration.ofDays(1),
+                sessionStarts::incrementAndGet);
+
+        manager.start();
+        assertEquals(0, sessionStarts.get());
+        api.failRegister = false;
+        manager.tick();
+
+        assertEquals(ClientMode.RECONCILING, manager.mode());
+        assertEquals(1, sessionStarts.get());
+        manager.shutdown();
     }
 
     private ConnectionManager manager(ServerApiClient api) {

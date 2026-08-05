@@ -85,12 +85,9 @@ public final class SyncCoordinator implements AutoCloseable {
             throw new IllegalStateException("Sync coordinator cannot be started in this state");
         }
         stateStore.save(state);
-        syncExecutor.submit(() -> {
-            reconcileAllLocalFiles();
-            return null;
-        }).get();
         watcher.start();
         running = true;
+        enqueueFullRescan();
         pollThread = new Thread(this::pollLoop, "syncverse-delta-poller");
         pollThread.start();
     }
@@ -125,13 +122,11 @@ public final class SyncCoordinator implements AutoCloseable {
     }
 
     private void reconcileAllLocalFiles() throws Exception {
-        retryPending();
         Map<String, FileSnapshot> snapshots = scanner.scan();
         TreeSet<String> filenames = new TreeSet<>(state.manifest().keySet());
         filenames.addAll(snapshots.keySet());
-        for (String filename : filenames) {
-            handleLocal(filename, snapshots.get(filename));
-        }
+        dirty.addAll(filenames);
+        drainDirty();
     }
 
     private void retryPending() throws Exception {
@@ -178,6 +173,7 @@ public final class SyncCoordinator implements AutoCloseable {
             state = uploads.submit(requireSession(), state, operation);
         } catch (Exception exception) {
             state = stateStore.load().orElse(state);
+            dirty.add(operation.filename());
             throw exception;
         }
     }
@@ -226,6 +222,7 @@ public final class SyncCoordinator implements AutoCloseable {
                 DeltaResponse response = serverApi.deltas(
                         requireSession(), state.lastSeenGlobalVersion());
                 accept(response).get();
+                syncExecutor.submit(this::drainDirty);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return;

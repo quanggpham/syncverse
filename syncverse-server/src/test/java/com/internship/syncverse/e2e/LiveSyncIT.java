@@ -11,6 +11,7 @@ import com.internship.syncverse.common.dto.FileChangeResponse;
 import com.internship.syncverse.common.dto.RegisterResponse;
 import com.internship.syncverse.server.SyncVerseServer;
 import com.internship.syncverse.server.persistence.OperationReceiptRepository;
+import com.internship.syncverse.server.persistence.ChangeLogRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,8 +48,12 @@ class LiveSyncIT {
     @Autowired
     private OperationReceiptRepository receipts;
 
+    @Autowired
+    private ChangeLogRepository changes;
+
     @Test
     void createUpdateDeleteConvergeWithoutBobFeedbackUploads() throws Exception {
+        long receiptsBefore = receipts.count();
         Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("alice"));
         Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("bob"));
         Files.writeString(aliceWorkspace.resolve("note.txt"), "one");
@@ -77,12 +82,145 @@ class LiveSyncIT {
 
             assertEquals(3, aliceApi.fileChanges.get());
             assertEquals(0, bobApi.fileChanges.get());
-            assertEquals(3, receipts.count());
+            assertEquals(receiptsBefore + 3, receipts.count());
             assertTrue(bob.state().manifest().get("note.txt").deleted());
         } finally {
             alice.close();
             bob.close();
         }
+    }
+
+    @Test
+    void staleOfflineUpdatePreservesCanonicalAndConflictOnOriginatingClient() throws Exception {
+        String filename = "conflict-shared.txt";
+        Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("conflict-alice"));
+        Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("conflict-bob"));
+        Files.writeString(aliceWorkspace.resolve(filename), "base");
+        CountingApi aliceApi = api();
+        CountingApi bobApi = api();
+        RegisterResponse aliceSession = aliceApi.register("Conflict_Alice");
+        RegisterResponse bobSession = bobApi.register("Conflict_Bob");
+        AtomicClientStateStore bobStore = new AtomicClientStateStore(bobWorkspace);
+        SyncCoordinator alice = coordinator(
+                aliceWorkspace, aliceApi, aliceSession, "Conflict_Alice");
+        SyncCoordinator bob = new SyncCoordinator(
+                bobWorkspace, bobApi, bobSession::sessionId, bobStore,
+                ClientState.empty("Conflict_Bob"));
+        SyncCoordinator restartedBob = null;
+        try {
+            alice.start();
+            bob.start();
+            eventually(Duration.ofSeconds(5),
+                    () -> Files.exists(bobWorkspace.resolve(filename)));
+            bob.close();
+
+            Files.writeString(aliceWorkspace.resolve(filename), "alice-new");
+            eventually(Duration.ofSeconds(5), () -> aliceApi.fileChanges.get() == 2);
+            Files.writeString(bobWorkspace.resolve(filename), "bob-new");
+            ClientState offlineState = bobStore.load().orElseThrow();
+            RegisterResponse reconnected = bobApi.reconnect(
+                    "Conflict_Bob", offlineState.lastSeenGlobalVersion());
+            restartedBob = new SyncCoordinator(
+                    bobWorkspace, bobApi, reconnected::sessionId, bobStore, offlineState);
+            restartedBob.start();
+
+            SyncCoordinator activeBob = restartedBob;
+            try {
+                eventually(Duration.ofSeconds(5), () ->
+                        Files.readString(bobWorkspace.resolve(filename)).equals("alice-new")
+                                && java.util.Objects.equals(
+                                conflictContent(bobWorkspace), "bob-new")
+                                && java.util.Objects.equals(
+                                conflictContent(aliceWorkspace), "bob-new")
+                                && activeBob.state().lastSeenGlobalVersion() >= 3);
+            } catch (AssertionError failure) {
+                throw new AssertionError(
+                        "alice=" + workspaceContents(aliceWorkspace)
+                                + ", bob=" + workspaceContents(bobWorkspace)
+                                + ", aliceOps=" + aliceApi.fileChanges
+                                + ", bobOps=" + bobApi.fileChanges
+                                + ", bobCursor=" + activeBob.state().lastSeenGlobalVersion()
+                                + ", changes=" + changes.findAfter(0, 20),
+                        failure);
+            }
+
+            assertEquals(1, bobApi.fileChanges.get());
+        } finally {
+            alice.close();
+            if (restartedBob != null) {
+                restartedBob.close();
+            }
+        }
+    }
+
+    @Test
+    void staleOfflineDeleteIsSentOnceThenRemoteUpdateIsRestored() throws Exception {
+        String filename = "delete-shared.txt";
+        Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("delete-alice"));
+        Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("delete-bob"));
+        Files.writeString(aliceWorkspace.resolve(filename), "base");
+        CountingApi aliceApi = api();
+        CountingApi bobApi = api();
+        RegisterResponse aliceSession = aliceApi.register("Delete_Alice");
+        RegisterResponse bobSession = bobApi.register("Delete_Bob");
+        AtomicClientStateStore bobStore = new AtomicClientStateStore(bobWorkspace);
+        SyncCoordinator alice = coordinator(
+                aliceWorkspace, aliceApi, aliceSession, "Delete_Alice");
+        SyncCoordinator bob = new SyncCoordinator(
+                bobWorkspace, bobApi, bobSession::sessionId, bobStore,
+                ClientState.empty("Delete_Bob"));
+        SyncCoordinator restartedBob = null;
+        try {
+            alice.start();
+            bob.start();
+            eventually(Duration.ofSeconds(5),
+                    () -> Files.exists(bobWorkspace.resolve(filename)));
+            bob.close();
+
+            Files.writeString(aliceWorkspace.resolve(filename), "server-new");
+            eventually(Duration.ofSeconds(5), () -> aliceApi.fileChanges.get() == 2);
+            Files.delete(bobWorkspace.resolve(filename));
+            ClientState offlineState = bobStore.load().orElseThrow();
+            RegisterResponse reconnected = bobApi.reconnect(
+                    "Delete_Bob", offlineState.lastSeenGlobalVersion());
+            restartedBob = new SyncCoordinator(
+                    bobWorkspace, bobApi, reconnected::sessionId, bobStore, offlineState);
+            restartedBob.start();
+
+            SyncCoordinator activeBob = restartedBob;
+            eventually(Duration.ofSeconds(5), () ->
+                    Files.exists(bobWorkspace.resolve(filename))
+                            && Files.readString(bobWorkspace.resolve(filename))
+                            .equals("server-new")
+                            && activeBob.state().pendingOperation() == null);
+
+            assertEquals(1, bobApi.fileChanges.get());
+        } finally {
+            alice.close();
+            if (restartedBob != null) {
+                restartedBob.close();
+            }
+        }
+    }
+
+    private static String conflictContent(Path workspace) throws Exception {
+        try (var files = Files.list(workspace)) {
+            var conflict = files.filter(path -> path.getFileName().toString()
+                            .contains(".conflict-"))
+                    .findFirst();
+            return conflict.isPresent() ? Files.readString(conflict.orElseThrow()) : null;
+        }
+    }
+
+    private static java.util.Map<String, String> workspaceContents(Path workspace)
+            throws Exception {
+        java.util.Map<String, String> contents = new java.util.TreeMap<>();
+        try (var files = Files.list(workspace)) {
+            for (Path path : files.filter(Files::isRegularFile).toList()) {
+                contents.put(path.getFileName().toString(), Files.readString(path));
+            }
+        }
+        return contents;
     }
 
     private SyncCoordinator coordinator(

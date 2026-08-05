@@ -1,10 +1,15 @@
 package com.internship.syncverse.client.sync;
 
+import com.internship.syncverse.client.http.ServerApiClient;
+import com.internship.syncverse.client.http.ServerApiException;
 import com.internship.syncverse.client.state.AtomicClientStateStore;
 import com.internship.syncverse.client.state.ClientState;
 import com.internship.syncverse.client.state.FileManifestEntry;
 import com.internship.syncverse.common.dto.DeltaResponse;
 import com.internship.syncverse.common.dto.FileRevision;
+import com.internship.syncverse.common.dto.FileChangeRequest;
+import com.internship.syncverse.common.dto.FileChangeResponse;
+import com.internship.syncverse.common.dto.RegisterResponse;
 import com.internship.syncverse.common.protocol.FileOperation;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +24,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -85,6 +91,43 @@ class SyncCoordinatorTest {
         assertEquals(result, store.load().orElseThrow());
     }
 
+    @Test
+    void retryableInitialUploadDoesNotEscapeStartAndRemainsPending() throws Exception {
+        Path workspace = Files.createDirectory(temporaryDirectory.resolve("live-workspace"));
+        Files.writeString(workspace.resolve("offline.txt"), "local-change");
+        AtomicClientStateStore store = new AtomicClientStateStore(workspace);
+        UUID session = UUID.randomUUID();
+        ServerApiClient offlineUploadApi = new StubServerApi() {
+            @Override
+            public FileChangeResponse fileChange(FileChangeRequest request)
+                    throws ServerApiException {
+                throw ServerApiException.retryable("network lost after registration");
+            }
+
+            @Override
+            public DeltaResponse deltas(UUID sessionId, long since)
+                    throws ServerApiException {
+                throw ServerApiException.retryable("network lost after registration");
+            }
+        };
+        SyncCoordinator coordinator = new SyncCoordinator(
+                workspace, offlineUploadApi, () -> session, store,
+                ClientState.empty("Alice_Node"));
+        try {
+            coordinator.start();
+
+            long deadline = System.nanoTime() + java.time.Duration.ofSeconds(1).toNanos();
+            while (store.load().map(ClientState::pendingOperation).orElse(null) == null
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            org.junit.jupiter.api.Assertions.assertNotNull(
+                    store.load().orElseThrow().pendingOperation());
+        } finally {
+            coordinator.close();
+        }
+    }
+
     private AtomicClientStateStore store() throws Exception {
         return new AtomicClientStateStore(
                 Files.createDirectory(temporaryDirectory.resolve("workspace")));
@@ -93,5 +136,27 @@ class SyncCoordinatorTest {
     private static FileRevision revision(long version, String filename, String marker) {
         return new FileRevision(version, filename, FileOperation.UPDATE,
                 version, marker.repeat(64).substring(0, 64), marker.length(), "eA==");
+    }
+
+    private abstract static class StubServerApi implements ServerApiClient {
+        @Override
+        public RegisterResponse register(String clientName) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public RegisterResponse reconnect(String clientName, long lastSeenGlobalVersion) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void heartbeat(UUID sessionId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public DeltaResponse deltas(UUID sessionId, long since) throws ServerApiException {
+            return new DeltaResponse(since, since, List.of());
+        }
     }
 }
