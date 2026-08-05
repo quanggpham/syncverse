@@ -14,7 +14,7 @@ deliverables: `server.jar` and `client.jar`.
 
 | Command | Observed result |
 |---|---|
-| `mvn clean verify` | `BUILD SUCCESS`; 101 tests; 0 failures; 0 errors; 0 skipped; Maven wall time 27.666 s |
+| `mvn clean verify` | `BUILD SUCCESS`; 102 tests; 0 failures; 0 errors; 0 skipped; Maven wall time 33.278 s |
 | `mvn -pl syncverse-server -am "-Dit.test=PackagedJarsE2EIT" "-Dfailsafe.failIfNoSpecifiedTests=false" verify` | Packaged-process smoke test 1/1 passed |
 | `mvn -pl syncverse-client dependency:tree` | 0 Spring, servlet, Tomcat, Jetty, Netty, JDBC, or H2 dependencies in the client tree |
 | `mvn -pl syncverse-server dependency:tree` | SLF4J API 2.0.18 appears once; Logback Classic 1.5.34 is the single runtime provider |
@@ -24,10 +24,10 @@ Test distribution and summed test-case durations from JUnit XML:
 
 | Module | Tests | Test-case time |
 |---|---:|---:|
-| `syncverse-common` | 2 | 0.104 s |
-| `syncverse-client` | 47 | 1.457 s |
-| `syncverse-server` unit + integration | 52 | 15.870 s |
-| **Total** | **101** | **17.431 s** |
+| `syncverse-common` | 2 | 0.183 s |
+| `syncverse-client` | 48 | 1.922 s |
+| `syncverse-server` unit + integration | 52 | 17.613 s |
+| **Total** | **102** | **19.718 s** |
 
 ## Packaged-process evidence
 
@@ -40,9 +40,9 @@ Observed convergence times from the packaged JAR run:
 
 | Mutation | Alice-to-Bob convergence |
 |---|---:|
-| Create | 435 ms |
-| Update | 375 ms |
-| Delete | 373 ms |
+| Create | 440 ms |
+| Update | 377 ms |
+| Delete | 378 ms |
 
 All three are below the 5-second acceptance threshold. Before controlled shutdown,
 the server and both clients were alive. Captured server logs contained no
@@ -53,7 +53,7 @@ the server and both clients were alive. Captured server logs contained no
 | Artifact | Size | Manifest entry point | External dependency directory |
 |---|---:|---|---|
 | `syncverse-server/target/server.jar` | 23,844,203 bytes | Boot `JarLauncher`; `Start-Class: com.internship.syncverse.server.SyncVerseServer` | Not required |
-| `syncverse-client/target/client.jar` | 3,564,682 bytes | `Main-Class: com.internship.syncverse.client.SyncVerseClient` | Not required |
+| `syncverse-client/target/client.jar` | 3,564,676 bytes | `Main-Class: com.internship.syncverse.client.SyncVerseClient` | Not required |
 
 The manifests report the local build JDK as 21 while Maven compiles with
 `maven.compiler.release=17`; runtime bytecode compatibility therefore targets Java 17.
@@ -71,7 +71,7 @@ The manifests report the local build JDK as 21 while Maven compiles with
 | Edit-after-ACK-loss safety | A later local edit produces one additional intentional conflict; both old pending bytes and newer bytes survive |
 | Stale delete | Canonical bytes remain unchanged, no change-log row is added for the rejected delete, and the client reconciles to server state |
 | Restart durability | Reopening the same H2 path preserves earlier revisions and does not lower the maximum global version |
-| Error contract | HTTP 400/409/410/413/500 return safe `ApiError` bodies with matching `X-Request-Id`; no stack trace, SQL detail, Base64 field, or complete session ID is returned |
+| Error contract | HTTP 400/409/410/413/500 return safe `ApiError` bodies with matching `X-Request-Id`; no stack trace, SQL detail, Base64 field, or complete session ID is returned; the client classifies 409 stale delete as permanent/reconcile rather than retryable |
 | Test timing | Fixed sleeps above 100 ms: 0; polling helpers use 25-50 ms checks with explicit deadlines |
 
 ## Phase review record

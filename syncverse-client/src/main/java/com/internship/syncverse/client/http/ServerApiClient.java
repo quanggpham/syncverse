@@ -70,7 +70,7 @@ final class JdkServerApiClient implements ServerApiClient {
     @Override
     public FileChangeResponse fileChange(FileChangeRequest request)
             throws ServerApiException {
-        return post("/api/files/changes", request, FileChangeResponse.class, 200, 409);
+        return post("/api/files/changes", request, FileChangeResponse.class, 200);
     }
 
     @Override
