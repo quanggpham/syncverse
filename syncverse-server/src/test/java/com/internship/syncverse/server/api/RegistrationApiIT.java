@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Import(RegistrationApiIT.ClockConfiguration.class)
 class RegistrationApiIT {
 
+    private static final int MAX_HTTP_REQUEST_BYTES = 2 * 1024 * 1024;
     private static final Pattern SESSION_ID =
             Pattern.compile("\\\"sessionId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
 
@@ -113,6 +114,15 @@ class RegistrationApiIT {
 
         assertEquals(410, response.statusCode());
         assertTrue(response.body().contains("\"code\":\"SESSION_EXPIRED\""));
+    }
+
+    @Test
+    void requestBodyOverTwoMebibytesIsRejectedBeforeJsonDecoding() throws Exception {
+        HttpResponse<String> response = post(
+                "/api/register", "x".repeat(MAX_HTTP_REQUEST_BYTES + 1));
+
+        assertEquals(413, response.statusCode());
+        assertTrue(response.body().contains("\"code\":\"FILE_TOO_LARGE\""));
     }
 
     private HttpResponse<String> post(String path, String json)

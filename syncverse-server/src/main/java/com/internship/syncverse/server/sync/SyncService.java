@@ -124,8 +124,7 @@ public final class SyncService {
 
     private FileChangeResponse createConflictCopy(
             FileChangeRequest request, byte[] content, String clientName) {
-        String conflictFilename = conflictNames.generate(
-                request.filename(), clientName, request.operationId());
+        String conflictFilename = availableConflictFilename(request, clientName);
         Instant now = clock.instant();
         long version = changes.append(
                 conflictFilename,
@@ -153,6 +152,17 @@ public final class SyncService {
                 now);
         receipts.insert(receipt);
         return response(receipt);
+    }
+
+    private String availableConflictFilename(FileChangeRequest request, String clientName) {
+        int attempt = 0;
+        while (true) {
+            String candidate = conflictNames.generate(
+                    request.filename(), clientName, request.operationId(), attempt++);
+            if (files.find(candidate).isEmpty()) {
+                return candidate;
+            }
+        }
     }
 
     private FileChangeResponse applyCanonical(

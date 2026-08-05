@@ -125,6 +125,31 @@ class SyncServiceIT {
     }
 
     @Test
+    void conflictCopyDoesNotOverwriteAnExistingConflictFilename() {
+        FileChangeResponse created = service.apply(request(
+                alice, UUID.randomUUID(), "config.json", FileOperation.CREATE, 0, bytes("base")));
+        service.apply(request(alice, UUID.randomUUID(), "config.json", FileOperation.UPDATE,
+                created.fileVersion(), bytes("alice-new")));
+        String occupiedName = "config.conflict-Bob_Node-a1b2c3d4.json";
+        service.apply(request(
+                alice, UUID.randomUUID(), occupiedName, FileOperation.CREATE, 0, bytes("keep-me")));
+
+        FileChangeResponse conflict = service.apply(request(
+                bob,
+                UUID.fromString("a1b2c3d4-1111-2222-3333-444444444444"),
+                "config.json",
+                FileOperation.UPDATE,
+                created.fileVersion(),
+                bytes("bob-new")));
+
+        assertEquals(ChangeOutcome.CONFLICT_COPY_CREATED, conflict.outcome());
+        assertEquals("config.conflict-Bob_Node-a1b2c3d41111.json", conflict.acceptedFilename());
+        assertArrayEquals(bytes("keep-me"), files.find(occupiedName).orElseThrow().content());
+        assertArrayEquals(bytes("bob-new"),
+                files.find(conflict.acceptedFilename()).orElseThrow().content());
+    }
+
+    @Test
     void staleDeletePreservesCanonicalAndAddsNoChangeRow() {
         FileChangeResponse created = service.apply(request(
                 alice, UUID.randomUUID(), "config.json", FileOperation.CREATE, 0, bytes("base")));

@@ -27,11 +27,22 @@ public final class GlobalExceptionHandler {
             InvalidClientNameException.class,
             InvalidRequestException.class,
             InvalidFileChangeException.class,
-            IllegalArgumentException.class,
-            HttpMessageNotReadableException.class
+            IllegalArgumentException.class
     })
     ResponseEntity<ApiError> invalidRequest(Exception exception) {
         return error(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", exception.getMessage());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<ApiError> unreadableRequest(HttpMessageNotReadableException exception) {
+        Throwable cause = exception;
+        while (cause != null) {
+            if (cause instanceof RequestBodyTooLargeException) {
+                return error(HttpStatus.CONTENT_TOO_LARGE, "FILE_TOO_LARGE", cause.getMessage());
+            }
+            cause = cause.getCause();
+        }
+        return invalidRequest(exception);
     }
 
     @ExceptionHandler(FileTooLargeException.class)

@@ -41,7 +41,10 @@ public final class SyncVerseClient {
             return DEFAULT_SERVER_URI;
         }
         URI uri = URI.create(configured);
-        if (uri.getScheme() == null || uri.getHost() == null) {
+        String scheme = uri.getScheme();
+        if ((scheme == null
+                || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https")))
+                || uri.getHost() == null) {
             throw new IllegalArgumentException("SYNCVERSE_SERVER_URL must be an absolute HTTP URL");
         }
         return uri;
