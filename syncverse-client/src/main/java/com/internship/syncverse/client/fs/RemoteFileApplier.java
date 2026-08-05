@@ -90,7 +90,12 @@ public final class RemoteFileApplier {
     }
 
     private void replace(Path target, byte[] content) throws IOException {
-        Path temporary = Files.createTempFile(workspace, ".syncverse-", ".tmp");
+        Path workspaceParent = workspace.getParent();
+        if (workspaceParent == null) {
+            throw new IOException("Workspace must have a parent directory");
+        }
+        Path temporary = Files.createTempFile(
+                workspaceParent, ".syncverse-" + workspace.getFileName() + "-", ".tmp");
         try {
             Files.write(temporary, content);
             try {

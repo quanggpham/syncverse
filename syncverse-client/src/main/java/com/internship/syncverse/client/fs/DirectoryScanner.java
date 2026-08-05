@@ -37,7 +37,6 @@ public final class DirectoryScanner {
 
     private java.util.Optional<FileSnapshot> snapshot(Path path) throws IOException {
         if (!path.getParent().equals(workspace)
-                || isInternalTemporaryFile(path.getFileName().toString())
                 || Files.isSymbolicLink(path)
                 || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
                 || Files.size(path) > MAX_FILE_BYTES) {
@@ -49,10 +48,6 @@ public final class DirectoryScanner {
         }
         return java.util.Optional.of(new FileSnapshot(
                 path.getFileName().toString(), content.length, checksum(content), content));
-    }
-
-    static boolean isInternalTemporaryFile(String filename) {
-        return filename.startsWith(".syncverse-") && filename.endsWith(".tmp");
     }
 
     private static String checksum(byte[] content) {

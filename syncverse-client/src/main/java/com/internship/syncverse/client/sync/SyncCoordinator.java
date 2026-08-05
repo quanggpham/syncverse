@@ -5,6 +5,7 @@ import com.internship.syncverse.client.fs.DirectoryWatcher;
 import com.internship.syncverse.client.fs.FileSnapshot;
 import com.internship.syncverse.client.fs.RemoteFileApplier;
 import com.internship.syncverse.client.http.ServerApiClient;
+import com.internship.syncverse.client.http.ServerApiException;
 import com.internship.syncverse.client.state.PendingOperation;
 import com.internship.syncverse.client.state.AtomicClientStateStore;
 import com.internship.syncverse.client.state.ClientState;
@@ -39,6 +40,7 @@ public final class SyncCoordinator implements AutoCloseable {
     private final RevisionApplier revisionApplier;
     private final ExecutorService syncExecutor;
     private final Set<String> dirty = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> permanentRejections = new ConcurrentHashMap<>();
     private volatile ClientState state;
     private ServerApiClient serverApi;
     private Supplier<UUID> sessionId;
@@ -164,6 +166,11 @@ public final class SyncCoordinator implements AutoCloseable {
             content = Base64.getEncoder().encodeToString(snapshot.content());
         }
         long baseVersion = entry == null ? 0 : entry.fileVersion();
+        String fingerprint = fingerprint(operation, checksum);
+        if (Objects.equals(permanentRejections.get(filename), fingerprint)) {
+            return;
+        }
+        permanentRejections.remove(filename);
         submitUpload(new PendingOperation(
                 UUID.randomUUID(), filename, operation, baseVersion, checksum, content));
     }
@@ -171,6 +178,17 @@ public final class SyncCoordinator implements AutoCloseable {
     private void submitUpload(PendingOperation operation) throws Exception {
         try {
             state = uploads.submit(requireSession(), state, operation);
+            permanentRejections.remove(operation.filename());
+        } catch (ServerApiException exception) {
+            state = stateStore.load().orElse(state);
+            if (exception.kind() == ServerApiException.Kind.PERMANENT) {
+                permanentRejections.put(operation.filename(),
+                        fingerprint(operation.operation(), operation.checksum()));
+                LOGGER.warn("Server permanently rejected local file {}", operation.filename(), exception);
+                return;
+            }
+            dirty.add(operation.filename());
+            throw exception;
         } catch (Exception exception) {
             state = stateStore.load().orElse(state);
             dirty.add(operation.filename());
@@ -187,6 +205,7 @@ public final class SyncCoordinator implements AutoCloseable {
     }
 
     private void enqueueFilename(String filename) {
+        permanentRejections.remove(filename);
         dirty.add(filename);
         syncExecutor.submit(this::drainDirty);
     }
@@ -248,6 +267,10 @@ public final class SyncCoordinator implements AutoCloseable {
                 && entry.fileVersion() == revision.fileVersion()
                 && entry.deleted() == deleted
                 && Objects.equals(entry.checksum(), revision.checksum());
+    }
+
+    private static String fingerprint(FileOperation operation, String checksum) {
+        return operation.name() + ':' + Objects.toString(checksum, "");
     }
 
     @Override

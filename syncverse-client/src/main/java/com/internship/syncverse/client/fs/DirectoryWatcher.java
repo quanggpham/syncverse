@@ -69,9 +69,6 @@ public final class DirectoryWatcher implements AutoCloseable {
             return;
         }
         String filename = context.toString();
-        if (DirectoryScanner.isInternalTemporaryFile(filename)) {
-            return;
-        }
         long generation = generations.merge(filename, 1L, Long::sum);
         Cancellable previous = pending.remove(filename);
         if (previous != null) {

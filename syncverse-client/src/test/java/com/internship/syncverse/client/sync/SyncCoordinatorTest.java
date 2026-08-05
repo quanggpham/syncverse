@@ -25,6 +25,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -128,6 +130,52 @@ class SyncCoordinatorTest {
         }
     }
 
+    @Test
+    void permanentFailureIsNotRecreatedAcrossEmptyDeltaPolls() throws Exception {
+        Path workspace = Files.createDirectory(temporaryDirectory.resolve("rejected-workspace"));
+        Files.writeString(workspace.resolve("rejected.txt"), "unchanged");
+        AtomicClientStateStore store = new AtomicClientStateStore(workspace);
+        AtomicInteger uploads = new AtomicInteger();
+        AtomicInteger polls = new AtomicInteger();
+        Semaphore pollResponses = new Semaphore(0);
+        ServerApiClient permanentlyRejectingApi = new StubServerApi() {
+            @Override
+            public FileChangeResponse fileChange(FileChangeRequest request)
+                    throws ServerApiException {
+                uploads.incrementAndGet();
+                throw ServerApiException.permanent("validation rejected");
+            }
+
+            @Override
+            public DeltaResponse deltas(UUID sessionId, long since)
+                    throws ServerApiException {
+                polls.incrementAndGet();
+                try {
+                    pollResponses.acquire();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw ServerApiException.retryable("stopped", exception);
+                }
+                return new DeltaResponse(since, since, List.of());
+            }
+        };
+        SyncCoordinator coordinator = new SyncCoordinator(
+                workspace, permanentlyRejectingApi, UUID::randomUUID, store,
+                ClientState.empty("Alice_Node"));
+        try {
+            coordinator.start();
+            awaitAtLeast(uploads, 1);
+            for (int expectedPolls = 2; expectedPolls <= 4; expectedPolls++) {
+                pollResponses.release();
+                awaitAtLeast(polls, expectedPolls);
+            }
+
+            assertEquals(1, uploads.get());
+        } finally {
+            coordinator.close();
+        }
+    }
+
     private AtomicClientStateStore store() throws Exception {
         return new AtomicClientStateStore(
                 Files.createDirectory(temporaryDirectory.resolve("workspace")));
@@ -136,6 +184,14 @@ class SyncCoordinatorTest {
     private static FileRevision revision(long version, String filename, String marker) {
         return new FileRevision(version, filename, FileOperation.UPDATE,
                 version, marker.repeat(64).substring(0, 64), marker.length(), "eA==");
+    }
+
+    private static void awaitAtLeast(AtomicInteger value, int expected) throws Exception {
+        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(1).toNanos();
+        while (value.get() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(expected, value.get());
     }
 
     private abstract static class StubServerApi implements ServerApiClient {

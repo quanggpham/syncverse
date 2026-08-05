@@ -46,7 +46,7 @@ class DirectoryWatcherTest {
         watcher.accept(StandardWatchEventKinds.OVERFLOW, null);
         scheduler.runPending();
 
-        assertEquals(List.of("FULL_RESCAN"), changed);
+        assertEquals(List.of(".syncverse-123.tmp", "FULL_RESCAN"), changed);
     }
 
     private static final class ManualScheduler implements DebounceScheduler {
