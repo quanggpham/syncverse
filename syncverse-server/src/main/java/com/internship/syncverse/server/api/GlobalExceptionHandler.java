@@ -46,7 +46,7 @@ public final class GlobalExceptionHandler {
             }
             cause = cause.getCause();
         }
-        return invalidRequest(exception);
+        return error(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Malformed JSON request body");
     }
 
     @ExceptionHandler(FileTooLargeException.class)

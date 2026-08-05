@@ -84,6 +84,33 @@ class ErrorContractIT {
     }
 
     @Test
+    void unsafeRequestIdIsReplacedBeforeEarlySizeError() throws Exception {
+        String unsafeRequestId = "bad\"\\request-id";
+        HttpResponse<String> response = post(
+                "/api/register", "x".repeat(2 * 1024 * 1024 + 1), unsafeRequestId);
+        String replacement = response.headers().firstValue("X-Request-Id").orElseThrow();
+
+        assertFalse(replacement.equals(unsafeRequestId));
+        assertTrue(replacement.matches("[0-9a-f-]{36}"));
+        assertError(response, 413, "FILE_TOO_LARGE", replacement);
+    }
+
+    @Test
+    void malformedValueIsNotEchoedInClientVisibleMessage() throws Exception {
+        String secretValue = "123e4567-e89b-12d3-a456-426614174000-secret";
+        HttpResponse<String> response = post(
+                "/api/heartbeat",
+                "{\"messageType\":\"HEARTBEAT\",\"sessionId\":\""
+                        + secretValue + "\"}",
+                REQUEST_ID);
+
+        assertError(response, 400, "INVALID_REQUEST", REQUEST_ID);
+        assertFalse(response.body().contains(secretValue));
+        assertEquals("Malformed JSON request body",
+                mapper.readTree(response.body()).get("message").asText());
+    }
+
+    @Test
     void unexpectedFailureIsMappedWithoutInternalDetails() throws Exception {
         HttpResponse<String> response = get("/api/test/failure", REQUEST_ID);
 

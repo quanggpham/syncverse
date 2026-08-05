@@ -12,6 +12,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -19,6 +20,8 @@ public final class RequestIdFilter extends OncePerRequestFilter {
 
     static final String HEADER = "X-Request-Id";
     static final String MDC_KEY = "requestId";
+    private static final Pattern SAFE_REQUEST_ID =
+            Pattern.compile("[A-Za-z0-9._:-]{1,128}");
 
     @Override
     protected void doFilterInternal(
@@ -26,9 +29,9 @@ public final class RequestIdFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
         String supplied = request.getHeader(HEADER);
-        String requestId = supplied == null || supplied.isBlank()
-                ? UUID.randomUUID().toString()
-                : supplied;
+        String requestId = supplied != null && SAFE_REQUEST_ID.matcher(supplied).matches()
+                ? supplied
+                : UUID.randomUUID().toString();
         response.setHeader(HEADER, requestId);
         MDC.put(MDC_KEY, requestId);
         try {

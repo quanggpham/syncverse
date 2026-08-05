@@ -220,8 +220,11 @@ public final class SyncCoordinator implements AutoCloseable {
                         filename, snapshot, baseEntry, action.fileVersion());
                 case APPLY_REMOTE, APPLY_DELETE -> applyRemote(remoteRevision);
                 case UPLOAD_CONFLICT -> {
-                    uploadSnapshot(filename, snapshot, baseEntry, action.fileVersion());
+                    PendingOperation operation = operationForSnapshot(
+                            filename, snapshot, baseEntry, action.fileVersion());
+                    persistPending(operation);
                     applyRemote(remoteRevision);
+                    submitUpload(operation);
                 }
             }
         }
@@ -237,6 +240,14 @@ public final class SyncCoordinator implements AutoCloseable {
             FileSnapshot snapshot,
             FileManifestEntry base,
             long baseVersion) throws Exception {
+        submitUpload(operationForSnapshot(filename, snapshot, base, baseVersion));
+    }
+
+    private PendingOperation operationForSnapshot(
+            String filename,
+            FileSnapshot snapshot,
+            FileManifestEntry base,
+            long baseVersion) {
         FileOperation operation;
         String checksum = null;
         String content = null;
@@ -249,8 +260,20 @@ public final class SyncCoordinator implements AutoCloseable {
             checksum = snapshot.checksum();
             content = Base64.getEncoder().encodeToString(snapshot.content());
         }
-        submitUpload(new PendingOperation(
-                UUID.randomUUID(), filename, operation, baseVersion, checksum, content));
+        return new PendingOperation(
+                UUID.randomUUID(), filename, operation, baseVersion, checksum, content);
+    }
+
+    private void persistPending(PendingOperation operation) throws IOException {
+        if (state.pendingOperation() != null
+                && !state.pendingOperation().equals(operation)) {
+            throw new IllegalStateException("A different upload operation is already pending");
+        }
+        ClientState pending = new ClientState(
+                state.formatVersion(), state.clientName(), state.lastSeenGlobalVersion(),
+                state.manifest(), operation);
+        stateStore.save(pending);
+        state = pending;
     }
 
     private void applyRemote(FileRevision revision) throws Exception {

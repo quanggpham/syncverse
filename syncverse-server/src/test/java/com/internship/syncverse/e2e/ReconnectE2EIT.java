@@ -278,7 +278,7 @@ class ReconnectE2EIT {
     }
 
     @Test
-    void editAfterDroppedConflictResponseIsPreservedAsANewConflict()
+    void editAfterDroppedConflictResponseIsPreservedDuringRecovery()
             throws Exception {
         String filename = "edited-after-conflict.txt";
         Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("edited-alice"));
@@ -334,9 +334,11 @@ class ReconnectE2EIT {
             SyncCoordinator active = secondRecovery;
             eventually(Duration.ofSeconds(5), () ->
                     active.state().pendingOperation() == null
-                            && Files.readString(bobWorkspace.resolve(filename)).equals("alice-new")
+                            && Files.readString(bobWorkspace.resolve(filename)).equals("bob-newer")
                             && conflictContents(bobWorkspace).contains("bob-pending")
-                            && conflictContents(bobWorkspace).contains("bob-newer"));
+                            && recoveredApi.fileChanges.get() == 2
+                            && changes.count() == changesBeforeConflicts + 2
+                            && receipts.count() == receiptsBeforeConflicts + 2);
 
             assertEquals(2, recoveredApi.fileChanges.get());
             assertEquals(changesBeforeConflicts + 2, changes.count());

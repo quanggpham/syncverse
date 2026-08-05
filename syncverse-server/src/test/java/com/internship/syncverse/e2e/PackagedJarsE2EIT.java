@@ -3,7 +3,6 @@ package com.internship.syncverse.e2e;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,11 +11,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
+import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PackagedJarsE2EIT {
+
+    private static final Pattern STARTED_PORT = Pattern.compile("Tomcat started on port (\\d+)");
 
     @TempDir
     Path temporaryDirectory;
@@ -28,7 +32,6 @@ class PackagedJarsE2EIT {
         assertTrue(Files.isRegularFile(serverJar), () -> "Missing " + serverJar);
         assertTrue(Files.isRegularFile(clientJar), () -> "Missing " + clientJar);
 
-        int port = availablePort();
         Path serverLog = temporaryDirectory.resolve("server.log");
         Path aliceLog = temporaryDirectory.resolve("alice.log");
         Path bobLog = temporaryDirectory.resolve("bob.log");
@@ -38,13 +41,16 @@ class PackagedJarsE2EIT {
 
         Process server = start(
                 serverLog,
-                Map.of("SERVER_PORT", Integer.toString(port),
+                Map.of("SERVER_PORT", "0",
                         "SYNCVERSE_DATA_DIR", data.toString()),
                 serverJar.toString(), "AlphaServer");
         Process alice = null;
         Process bob = null;
         try {
-            await(Duration.ofSeconds(15), () -> serverReady(port));
+            await(Duration.ofSeconds(15), () -> serverPort(serverLog) > 0,
+                    () -> readLog(serverLog));
+            int port = serverPort(serverLog);
+            await(Duration.ofSeconds(10), () -> serverReady(port), () -> readLog(serverLog));
             Map<String, String> clientEnvironment = Map.of(
                     "SYNCVERSE_SERVER_URL", "http://localhost:" + port);
             alice = start(aliceLog, clientEnvironment,
@@ -53,20 +59,25 @@ class PackagedJarsE2EIT {
                     clientJar.toString(), "Bob_Node", bobWorkspace.toString());
             await(Duration.ofSeconds(10), () ->
                     logContains(aliceLog, "SyncVerse client Alice_Node started")
-                            && logContains(bobLog, "SyncVerse client Bob_Node started"));
+                            && logContains(bobLog, "SyncVerse client Bob_Node started"),
+                    () -> readLog(aliceLog) + System.lineSeparator() + readLog(bobLog));
 
             Path aliceFile = aliceWorkspace.resolve("demo.txt");
             Path bobFile = bobWorkspace.resolve("demo.txt");
             Files.writeString(aliceFile, "created");
             long createMillis = await(Duration.ofSeconds(10), () ->
-                    Files.exists(bobFile) && Files.readString(bobFile).equals("created"));
+                    Files.exists(bobFile) && Files.readString(bobFile).equals("created"),
+                    () -> readLog(serverLog) + System.lineSeparator() + readLog(bobLog));
 
             Files.writeString(aliceFile, "updated");
             long updateMillis = await(
-                    Duration.ofSeconds(10), () -> Files.readString(bobFile).equals("updated"));
+                    Duration.ofSeconds(10), () -> Files.readString(bobFile).equals("updated"),
+                    () -> readLog(serverLog) + System.lineSeparator() + readLog(bobLog));
 
             Files.delete(aliceFile);
-            long deleteMillis = await(Duration.ofSeconds(10), () -> Files.notExists(bobFile));
+            long deleteMillis = await(
+                    Duration.ofSeconds(10), () -> Files.notExists(bobFile),
+                    () -> readLog(serverLog) + System.lineSeparator() + readLog(bobLog));
 
             System.out.printf(
                     "PACKAGED_SMOKE_METRICS createMs=%d updateMs=%d deleteMs=%d%n",
@@ -76,9 +87,9 @@ class PackagedJarsE2EIT {
             assertTrue(alice.isAlive(), () -> readLog(aliceLog));
             assertTrue(bob.isAlive(), () -> readLog(bobLog));
         } finally {
-            stop(bob);
-            stop(alice);
-            stop(server);
+            stop(bob, bobLog);
+            stop(alice, aliceLog);
+            stop(server, serverLog);
         }
 
         assertFalse(readLog(serverLog).contains("contentBase64"));
@@ -118,10 +129,12 @@ class PackagedJarsE2EIT {
         return cwd.resolveSibling(module).resolve("target").resolve(filename);
     }
 
-    private static int availablePort() throws Exception {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
+    private static int serverPort(Path log) {
+        Matcher matcher = STARTED_PORT.matcher(readLog(log));
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
         }
+        return 0;
     }
 
     private static boolean serverReady(int port) {
@@ -153,7 +166,7 @@ class PackagedJarsE2EIT {
         }
     }
 
-    private static void stop(Process process) throws Exception {
+    private static void stop(Process process, Path log) throws Exception {
         if (process == null || !process.isAlive()) {
             return;
         }
@@ -162,9 +175,15 @@ class PackagedJarsE2EIT {
             process.destroyForcibly();
             process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
         }
+        if (process.isAlive()) {
+            throw new AssertionError("Process did not terminate:" + System.lineSeparator()
+                    + readLog(log));
+        }
     }
 
-    private static long await(Duration timeout, CheckedCondition condition) throws Exception {
+    private static long await(
+            Duration timeout, CheckedCondition condition, Supplier<String> diagnostic)
+            throws Exception {
         long started = System.nanoTime();
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
@@ -173,7 +192,9 @@ class PackagedJarsE2EIT {
             }
             Thread.sleep(50);
         }
-        assertTrue(condition.evaluate(), "Condition did not converge before " + timeout);
+        assertTrue(condition.evaluate(),
+                () -> "Condition did not converge before " + timeout
+                        + System.lineSeparator() + diagnostic.get());
         return Duration.ofNanos(System.nanoTime() - started).toMillis();
     }
 
