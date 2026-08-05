@@ -3,6 +3,8 @@ package com.internship.syncverse.client.sync;
 import com.internship.syncverse.client.http.ServerApiClient;
 import com.internship.syncverse.client.http.ServerApiException;
 import com.internship.syncverse.common.dto.RegisterResponse;
+import com.internship.syncverse.common.dto.FileChangeRequest;
+import com.internship.syncverse.common.dto.FileChangeResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -118,6 +120,11 @@ class ConnectionManagerTest {
             if (failHeartbeat) {
                 throw ServerApiException.retryable("server unavailable");
             }
+        }
+
+        @Override
+        public FileChangeResponse fileChange(FileChangeRequest request) {
+            throw new UnsupportedOperationException();
         }
     }
 }

@@ -2,6 +2,8 @@ package com.internship.syncverse.client.http;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.internship.syncverse.common.dto.HeartbeatRequest;
+import com.internship.syncverse.common.dto.FileChangeRequest;
+import com.internship.syncverse.common.dto.FileChangeResponse;
 import com.internship.syncverse.common.dto.ReconnectRequest;
 import com.internship.syncverse.common.dto.RegisterRequest;
 import com.internship.syncverse.common.dto.RegisterResponse;
@@ -22,6 +24,8 @@ public interface ServerApiClient {
             throws ServerApiException;
 
     void heartbeat(UUID sessionId) throws ServerApiException;
+
+    FileChangeResponse fileChange(FileChangeRequest request) throws ServerApiException;
 
     static ServerApiClient http(URI serverUri) {
         return new JdkServerApiClient(serverUri);
@@ -58,6 +62,12 @@ final class JdkServerApiClient implements ServerApiClient {
     public void heartbeat(UUID sessionId) throws ServerApiException {
         HeartbeatRequest request = new HeartbeatRequest(MessageType.HEARTBEAT, sessionId);
         post("/api/heartbeat", request, 204, Void.class);
+    }
+
+    @Override
+    public FileChangeResponse fileChange(FileChangeRequest request)
+            throws ServerApiException {
+        return post("/api/files/changes", request, 200, FileChangeResponse.class);
     }
 
     private <T> T post(String path, Object body, int expectedStatus, Class<T> responseType)
