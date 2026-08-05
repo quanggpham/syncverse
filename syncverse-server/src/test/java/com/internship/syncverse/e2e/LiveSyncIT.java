@@ -122,7 +122,7 @@ class LiveSyncIT {
                     "Conflict_Bob", offlineState.lastSeenGlobalVersion());
             restartedBob = new SyncCoordinator(
                     bobWorkspace, bobApi, reconnected::sessionId, bobStore, offlineState);
-            restartedBob.start();
+            restartedBob.start(reconnected.currentGlobalVersion(), ignored -> { });
 
             SyncCoordinator activeBob = restartedBob;
             try {
@@ -154,7 +154,7 @@ class LiveSyncIT {
     }
 
     @Test
-    void staleOfflineDeleteIsSentOnceThenRemoteUpdateIsRestored() throws Exception {
+    void staleOfflineDeleteIsSuppressedAndRemoteUpdateIsRestored() throws Exception {
         String filename = "delete-shared.txt";
         Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("delete-alice"));
         Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("delete-bob"));
@@ -185,7 +185,7 @@ class LiveSyncIT {
                     "Delete_Bob", offlineState.lastSeenGlobalVersion());
             restartedBob = new SyncCoordinator(
                     bobWorkspace, bobApi, reconnected::sessionId, bobStore, offlineState);
-            restartedBob.start();
+            restartedBob.start(reconnected.currentGlobalVersion(), ignored -> { });
 
             SyncCoordinator activeBob = restartedBob;
             eventually(Duration.ofSeconds(5), () ->
@@ -194,7 +194,7 @@ class LiveSyncIT {
                             .equals("server-new")
                             && activeBob.state().pendingOperation() == null);
 
-            assertEquals(1, bobApi.fileChanges.get());
+            assertEquals(0, bobApi.fileChanges.get());
         } finally {
             alice.close();
             if (restartedBob != null) {

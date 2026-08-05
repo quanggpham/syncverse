@@ -19,12 +19,14 @@ public final class ConnectionManager {
     private final Duration heartbeatInterval;
     private final Runnable firstSessionAvailable;
     private final LongSupplier persistedCursor;
+    private final boolean returningClient;
     private final RetryPolicy retryPolicy = RetryPolicy.exponential(
             Duration.ofSeconds(1), Duration.ofSeconds(30));
 
     private volatile ClientMode mode = ClientMode.STARTING;
     private volatile UUID sessionId;
     private volatile long lastSeenGlobalVersion;
+    private volatile long serverGlobalVersion;
     private int consecutiveFailures;
     private ScheduledFuture<?> heartbeatTask;
 
@@ -33,7 +35,7 @@ public final class ConnectionManager {
             String clientName,
             ScheduledExecutorService scheduler,
             Duration heartbeatInterval) {
-        this(serverApi, clientName, scheduler, heartbeatInterval, () -> { }, null);
+        this(serverApi, clientName, scheduler, heartbeatInterval, () -> { }, null, false);
     }
 
     public ConnectionManager(
@@ -43,7 +45,7 @@ public final class ConnectionManager {
             Duration heartbeatInterval,
             Runnable firstSessionAvailable) {
         this(serverApi, clientName, scheduler, heartbeatInterval,
-                firstSessionAvailable, null);
+                firstSessionAvailable, null, false);
     }
 
     public ConnectionManager(
@@ -53,6 +55,18 @@ public final class ConnectionManager {
             Duration heartbeatInterval,
             Runnable firstSessionAvailable,
             LongSupplier persistedCursor) {
+        this(serverApi, clientName, scheduler, heartbeatInterval,
+                firstSessionAvailable, persistedCursor, false);
+    }
+
+    public ConnectionManager(
+            ServerApiClient serverApi,
+            String clientName,
+            ScheduledExecutorService scheduler,
+            Duration heartbeatInterval,
+            Runnable firstSessionAvailable,
+            LongSupplier persistedCursor,
+            boolean returningClient) {
         this.serverApi = serverApi;
         this.clientName = clientName;
         this.scheduler = scheduler;
@@ -61,6 +75,7 @@ public final class ConnectionManager {
         this.persistedCursor = persistedCursor == null
                 ? () -> lastSeenGlobalVersion
                 : persistedCursor;
+        this.returningClient = returningClient;
         if (heartbeatInterval.isZero() || heartbeatInterval.isNegative()) {
             throw new IllegalArgumentException("Heartbeat interval must be positive");
         }
@@ -72,28 +87,26 @@ public final class ConnectionManager {
         }
         try {
             long cursor = persistedCursor.getAsLong();
-            if (cursor == 0) {
-                accept(serverApi.register(clientName), ClientMode.ONLINE);
-            } else {
+            if (returningClient) {
                 accept(serverApi.reconnect(clientName, cursor), ClientMode.RECONCILING);
+            } else {
+                accept(serverApi.register(clientName), ClientMode.RECONCILING);
             }
         } catch (ServerApiException exception) {
             handleFailure(exception);
         }
         if (mode != ClientMode.STOPPED) {
-            scheduleNext(mode == ClientMode.ONLINE
+            scheduleNext(mode == ClientMode.ONLINE || mode == ClientMode.RECONCILING
                     ? heartbeatInterval
                     : retryPolicy.delay(0));
         }
     }
 
     public synchronized void tick() {
-        if (mode == ClientMode.ONLINE) {
+        if (mode == ClientMode.ONLINE || mode == ClientMode.RECONCILING) {
             sendHeartbeat();
         } else if (mode == ClientMode.OFFLINE) {
             reconnect();
-        } else if (mode == ClientMode.RECONCILING) {
-            mode = ClientMode.ONLINE;
         }
     }
 
@@ -119,6 +132,10 @@ public final class ConnectionManager {
 
     public UUID sessionId() {
         return sessionId;
+    }
+
+    public long serverGlobalVersion() {
+        return serverGlobalVersion;
     }
 
     public boolean isStopped() {
@@ -147,6 +164,7 @@ public final class ConnectionManager {
     private void accept(RegisterResponse response, ClientMode nextMode) {
         boolean firstSession = sessionId == null;
         sessionId = response.sessionId();
+        serverGlobalVersion = response.currentGlobalVersion();
         mode = nextMode;
         if (firstSession) {
             firstSessionAvailable.run();
@@ -162,7 +180,7 @@ public final class ConnectionManager {
         }
         synchronized (this) {
             if (mode != ClientMode.STOPPED) {
-                Duration delay = mode == ClientMode.ONLINE
+                Duration delay = mode == ClientMode.ONLINE || mode == ClientMode.RECONCILING
                         ? heartbeatInterval
                         : retryPolicy.delay(Math.max(0, consecutiveFailures - 1));
                 scheduleNext(delay);

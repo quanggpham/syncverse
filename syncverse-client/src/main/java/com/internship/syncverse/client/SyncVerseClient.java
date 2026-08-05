@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -28,13 +29,15 @@ public final class SyncVerseClient {
         URI serverUri = serverUri(System.getenv());
         ServerApiClient serverApi = ServerApiClient.http(serverUri);
         AtomicClientStateStore stateStore = new AtomicClientStateStore(arguments.workspace());
-        ClientState state = stateStore.load().orElseGet(
+        Optional<ClientState> persistedState = stateStore.load();
+        ClientState state = persistedState.orElseGet(
                 () -> ClientState.empty(arguments.clientName()));
         if (!state.clientName().equals(arguments.clientName())) {
             throw new IllegalArgumentException(
                     "Workspace state belongs to client " + state.clientName());
         }
         AtomicReference<SyncCoordinator> coordinatorReference = new AtomicReference<>();
+        AtomicReference<ConnectionManager> connectionReference = new AtomicReference<>();
         ConnectionManager connection = new ConnectionManager(
                 serverApi,
                 arguments.clientName(),
@@ -42,7 +45,10 @@ public final class SyncVerseClient {
                 Duration.ofSeconds(4),
                 () -> {
                     try {
-                        coordinatorReference.get().start();
+                        ConnectionManager current = connectionReference.get();
+                        coordinatorReference.get().start(
+                                current::serverGlobalVersion,
+                                current::reconciliationComplete);
                     } catch (Exception exception) {
                         throw new IllegalStateException("Cannot start synchronization", exception);
                     }
@@ -52,7 +58,9 @@ public final class SyncVerseClient {
                     return current == null
                             ? state.lastSeenGlobalVersion()
                             : current.state().lastSeenGlobalVersion();
-                });
+                },
+                persistedState.isPresent());
+        connectionReference.set(connection);
 
         SyncCoordinator coordinator = new SyncCoordinator(
                 arguments.workspace(), serverApi, connection::sessionId, stateStore, state);

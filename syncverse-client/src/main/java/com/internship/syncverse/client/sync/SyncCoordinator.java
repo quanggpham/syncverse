@@ -19,18 +19,22 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 
 public final class SyncCoordinator implements AutoCloseable {
 
@@ -49,6 +53,8 @@ public final class SyncCoordinator implements AutoCloseable {
     private DirectoryWatcher watcher;
     private Thread pollThread;
     private volatile boolean running;
+    private LongSupplier reconciliationTarget;
+    private LongConsumer reconciliationComplete;
 
     public SyncCoordinator(
             Path workspace,
@@ -83,13 +89,22 @@ public final class SyncCoordinator implements AutoCloseable {
     }
 
     public void start() throws Exception {
+        start(() -> state.lastSeenGlobalVersion(), ignored -> { });
+    }
+
+    public void start(long targetGlobalVersion, LongConsumer completion) throws Exception {
+        start(() -> targetGlobalVersion, completion);
+    }
+
+    public void start(LongSupplier targetGlobalVersion, LongConsumer completion) throws Exception {
         if (serverApi == null || running) {
             throw new IllegalStateException("Sync coordinator cannot be started in this state");
         }
+        this.reconciliationTarget = targetGlobalVersion;
+        this.reconciliationComplete = completion;
         stateStore.save(state);
         watcher.start();
         running = true;
-        enqueueFullRescan();
         pollThread = new Thread(this::pollLoop, "syncverse-delta-poller");
         pollThread.start();
     }
@@ -129,6 +144,125 @@ public final class SyncCoordinator implements AutoCloseable {
         filenames.addAll(snapshots.keySet());
         dirty.addAll(filenames);
         drainDirty();
+    }
+
+    private void reconcileSession(long targetGlobalVersion) throws Exception {
+        syncExecutor.submit(() -> {
+            retryPending();
+            return null;
+        }).get();
+        Map<String, FileSnapshot> local = syncExecutor.submit(scanner::scan).get();
+        ClientState base = state;
+        List<FileRevision> revisions = fetchThrough(targetGlobalVersion);
+        syncExecutor.submit(() -> {
+            reconcile(base, local, revisions);
+            return null;
+        }).get();
+    }
+
+    private List<FileRevision> fetchThrough(long targetGlobalVersion) throws Exception {
+        ArrayList<FileRevision> revisions = new ArrayList<>();
+        long cursor = state.lastSeenGlobalVersion();
+        while (cursor < targetGlobalVersion) {
+            DeltaResponse response = serverApi.deltas(requireSession(), cursor);
+            if (response.fromExclusive() != cursor || response.changes().isEmpty()) {
+                throw new IllegalStateException("Server did not provide required reconciliation deltas");
+            }
+            for (FileRevision revision : response.changes()) {
+                if (revision.globalVersion() <= cursor) {
+                    throw new IllegalStateException("Reconciliation deltas are not increasing");
+                }
+                revisions.add(revision);
+                cursor = revision.globalVersion();
+            }
+        }
+        return List.copyOf(revisions);
+    }
+
+    private void reconcile(
+            ClientState base,
+            Map<String, FileSnapshot> local,
+            List<FileRevision> revisions) throws Exception {
+        HashMap<String, FileRevision> remote = new HashMap<>();
+        base.manifest().forEach((filename, entry) ->
+                remote.put(filename, manifestRevision(filename, entry)));
+        long reconciledCursor = base.lastSeenGlobalVersion();
+        for (FileRevision revision : revisions) {
+            if (revision.globalVersion() <= reconciledCursor) {
+                throw new IllegalArgumentException("Reconciliation revisions are not ordered");
+            }
+            remote.put(revision.filename(), revision);
+            reconciledCursor = revision.globalVersion();
+        }
+
+        TreeSet<String> filenames = new TreeSet<>(base.manifest().keySet());
+        filenames.addAll(local.keySet());
+        filenames.addAll(remote.keySet());
+        for (String filename : filenames) {
+            FileManifestEntry baseEntry = base.manifest().get(filename);
+            FileSnapshot snapshot = local.get(filename);
+            FileRevision remoteRevision = remote.get(filename);
+            ReconciliationAction action = Reconciler.reconcile(
+                    baseEntry, snapshot, remoteRevision);
+            switch (action.kind()) {
+                case NO_OP -> recordRemote(remoteRevision);
+                case UPLOAD_LOCAL -> uploadSnapshot(
+                        filename, snapshot, baseEntry, action.fileVersion());
+                case APPLY_REMOTE, APPLY_DELETE -> applyRemote(remoteRevision);
+                case UPLOAD_CONFLICT -> {
+                    uploadSnapshot(filename, snapshot, baseEntry, action.fileVersion());
+                    applyRemote(remoteRevision);
+                }
+            }
+        }
+        ClientState reconciled = new ClientState(
+                state.formatVersion(), state.clientName(), reconciledCursor,
+                state.manifest(), state.pendingOperation());
+        stateStore.save(reconciled);
+        state = reconciled;
+    }
+
+    private void uploadSnapshot(
+            String filename,
+            FileSnapshot snapshot,
+            FileManifestEntry base,
+            long baseVersion) throws Exception {
+        FileOperation operation;
+        String checksum = null;
+        String content = null;
+        if (snapshot == null) {
+            operation = FileOperation.DELETE;
+        } else {
+            operation = base == null || base.deleted()
+                    ? FileOperation.CREATE
+                    : FileOperation.UPDATE;
+            checksum = snapshot.checksum();
+            content = Base64.getEncoder().encodeToString(snapshot.content());
+        }
+        submitUpload(new PendingOperation(
+                UUID.randomUUID(), filename, operation, baseVersion, checksum, content));
+    }
+
+    private void applyRemote(FileRevision revision) throws Exception {
+        if (revision == null) {
+            return;
+        }
+        state = revisionApplier.apply(state, revision);
+    }
+
+    private void recordRemote(FileRevision revision) throws Exception {
+        if (revision == null) {
+            return;
+        }
+        HashMap<String, FileManifestEntry> manifest = new HashMap<>(state.manifest());
+        boolean deleted = revision.operation() == FileOperation.DELETE;
+        manifest.put(revision.filename(), new FileManifestEntry(
+                deleted ? null : revision.checksum(), revision.fileVersion(), deleted));
+        ClientState recorded = new ClientState(
+                state.formatVersion(), state.clientName(), state.lastSeenGlobalVersion(),
+                manifest, state.pendingOperation());
+        stateStore.save(recorded);
+        state = recorded;
     }
 
     private void retryPending() throws Exception {
@@ -207,7 +341,6 @@ public final class SyncCoordinator implements AutoCloseable {
     }
 
     private void enqueueFilename(String filename) {
-        permanentRejections.remove(filename);
         dirty.add(filename);
         syncExecutor.submit(this::drainDirty);
     }
@@ -238,17 +371,24 @@ public final class SyncCoordinator implements AutoCloseable {
     }
 
     private void pollLoop() {
+        UUID reconciledSession = null;
         while (running) {
             try {
+                UUID currentSession = requireSession();
+                if (!currentSession.equals(reconciledSession)) {
+                    reconcileSession(reconciliationTarget.getAsLong());
+                    reconciliationComplete.accept(state.lastSeenGlobalVersion());
+                    reconciledSession = currentSession;
+                    syncExecutor.submit(this::drainDirty);
+                }
                 DeltaResponse response = serverApi.deltas(
-                        requireSession(), state.lastSeenGlobalVersion());
+                        currentSession, state.lastSeenGlobalVersion());
                 accept(response).get();
                 syncExecutor.submit(this::drainDirty);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return;
-            } catch (ExecutionException | RuntimeException
-                     | com.internship.syncverse.client.http.ServerApiException exception) {
+            } catch (Exception exception) {
                 if (running) {
                     LOGGER.warn("Delta polling failed; retrying", exception);
                     try {

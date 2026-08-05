@@ -31,14 +31,16 @@ class ConnectionManagerTest {
     }
 
     @Test
-    void registerSuccessMovesClientOnline() throws Exception {
+    void registerSuccessMovesClientToReconcilingThenOnline() throws Exception {
         FakeServerApi api = new FakeServerApi();
         ConnectionManager manager = manager(api);
 
         manager.start();
 
-        assertEquals(ClientMode.ONLINE, manager.mode());
+        assertEquals(ClientMode.RECONCILING, manager.mode());
         assertEquals(api.registeredSession, manager.sessionId());
+        manager.reconciliationComplete(0);
+        assertEquals(ClientMode.ONLINE, manager.mode());
         manager.shutdown();
     }
 
@@ -120,7 +122,7 @@ class ConnectionManagerTest {
         AtomicLong cursor = new AtomicLong(37);
         ConnectionManager manager = new ConnectionManager(
                 api, "Alice_Node", scheduler, Duration.ofDays(1),
-                () -> { }, cursor::get);
+                () -> { }, cursor::get, true);
 
         manager.start();
 
@@ -128,6 +130,37 @@ class ConnectionManagerTest {
         assertEquals(1, api.reconnectCalls);
         assertEquals(37, api.reconnectCursor);
         assertEquals(ClientMode.RECONCILING, manager.mode());
+        manager.shutdown();
+    }
+
+    @Test
+    void persistedZeroCursorStillUsesReconnect() {
+        FakeServerApi api = new FakeServerApi();
+        ConnectionManager manager = new ConnectionManager(
+                api, "Alice_Node", scheduler, Duration.ofDays(1),
+                () -> { }, () -> 0, true);
+
+        manager.start();
+
+        assertEquals(0, api.registerCalls);
+        assertEquals(1, api.reconnectCalls);
+        assertEquals(ClientMode.RECONCILING, manager.mode());
+        manager.shutdown();
+    }
+
+    @Test
+    void reconcilingRemainsUntilCoordinatorCompletes() {
+        FakeServerApi api = new FakeServerApi();
+        ConnectionManager manager = new ConnectionManager(
+                api, "Alice_Node", scheduler, Duration.ofDays(1),
+                () -> { }, () -> 9, true);
+        manager.start();
+
+        manager.tick();
+
+        assertEquals(ClientMode.RECONCILING, manager.mode());
+        manager.reconciliationComplete(9);
+        assertEquals(ClientMode.ONLINE, manager.mode());
         manager.shutdown();
     }
 

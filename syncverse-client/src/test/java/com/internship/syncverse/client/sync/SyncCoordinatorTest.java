@@ -138,6 +138,7 @@ class SyncCoordinatorTest {
         AtomicInteger uploads = new AtomicInteger();
         AtomicInteger polls = new AtomicInteger();
         Semaphore pollResponses = new Semaphore(0);
+        UUID session = UUID.randomUUID();
         ServerApiClient permanentlyRejectingApi = new StubServerApi() {
             @Override
             public FileChangeResponse fileChange(FileChangeRequest request)
@@ -160,7 +161,7 @@ class SyncCoordinatorTest {
             }
         };
         SyncCoordinator coordinator = new SyncCoordinator(
-                workspace, permanentlyRejectingApi, UUID::randomUUID, store,
+                workspace, permanentlyRejectingApi, () -> session, store,
                 ClientState.empty("Alice_Node"));
         try {
             coordinator.start();

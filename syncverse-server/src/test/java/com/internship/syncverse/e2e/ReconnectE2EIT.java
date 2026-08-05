@@ -85,7 +85,7 @@ class ReconnectE2EIT {
                     "Catchup_Bob", offlineState.lastSeenGlobalVersion());
             restartedBob = new SyncCoordinator(
                     bobWorkspace, bobApi, session::sessionId, bobStore, offlineState);
-            restartedBob.start();
+            restartedBob.start(session.currentGlobalVersion(), ignored -> { });
             SyncCoordinator activeBob = restartedBob;
 
             eventually(Duration.ofSeconds(5), () ->
@@ -111,7 +111,7 @@ class ReconnectE2EIT {
     }
 
     @Test
-    void droppedUploadResponseRetriesSameOperationOnce() throws Exception {
+    void droppedUploadResponseSurvivesClientRestartWithSameOperation() throws Exception {
         long changesBefore = changes.count();
         long receiptsBefore = receipts.count();
         Path workspace = Files.createDirectory(temporaryDirectory.resolve("dropped-response"));
@@ -119,21 +119,83 @@ class ReconnectE2EIT {
         DropFirstResponseApi api = new DropFirstResponseApi(httpApi());
         RegisterResponse session = api.register("Dropped_Alice");
         AtomicClientStateStore store = new AtomicClientStateStore(workspace);
-        SyncCoordinator coordinator = new SyncCoordinator(
+        SyncCoordinator firstProcess = new SyncCoordinator(
                 workspace, api, session::sessionId, store,
                 ClientState.empty("Dropped_Alice"));
+        SyncCoordinator restartedProcess = null;
         try {
-            coordinator.start();
+            firstProcess.start();
             eventually(Duration.ofSeconds(5), () ->
-                    api.attempts.get() >= 2
-                            && coordinator.state().pendingOperation() == null
-                            && coordinator.state().lastSeenGlobalVersion() > 0);
+                    api.attempts.get() == 1
+                            && store.load().orElseThrow().pendingOperation() != null);
+            UUID operationId = store.load().orElseThrow()
+                    .pendingOperation().operationId();
+            firstProcess.close();
 
-            assertEquals(2, api.attempts.get());
+            ClientState persisted = store.load().orElseThrow();
+            CountingApi recoveredApi = new CountingApi(httpApi());
+            RegisterResponse recoveredSession = recoveredApi.reconnect(
+                    "Dropped_Alice", persisted.lastSeenGlobalVersion());
+            restartedProcess = new SyncCoordinator(
+                    workspace, recoveredApi, recoveredSession::sessionId, store, persisted);
+            restartedProcess.start(
+                    recoveredSession.currentGlobalVersion(), ignored -> { });
+            SyncCoordinator activeProcess = restartedProcess;
+            eventually(Duration.ofSeconds(5), () ->
+                    activeProcess.state().pendingOperation() == null
+                            && activeProcess.state().lastSeenGlobalVersion()
+                            >= recoveredSession.currentGlobalVersion());
+
+            assertEquals(1, api.attempts.get());
+            assertEquals(1, recoveredApi.fileChanges.get());
+            assertTrue(receipts.find(operationId).isPresent());
             assertEquals(changesBefore + 1, changes.count());
             assertEquals(receiptsBefore + 1, receipts.count());
         } finally {
-            coordinator.close();
+            firstProcess.close();
+            if (restartedProcess != null) {
+                restartedProcess.close();
+            }
+        }
+    }
+
+    @Test
+    void newClientWithIdenticalServerBytesRecordsVersionWithoutConflictUpload()
+            throws Exception {
+        long changesBefore = changes.count();
+        Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("same-alice"));
+        Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("same-bob"));
+        Files.writeString(aliceWorkspace.resolve("already-same.txt"), "same-bytes");
+        Files.writeString(bobWorkspace.resolve("already-same.txt"), "same-bytes");
+        CountingApi aliceApi = new CountingApi(httpApi());
+        CountingApi bobApi = new CountingApi(httpApi());
+        RegisterResponse aliceSession = aliceApi.register("Same_Alice");
+        SyncCoordinator alice = coordinator(
+                aliceWorkspace, aliceApi, aliceSession, "Same_Alice");
+        SyncCoordinator bob = null;
+        try {
+            alice.start();
+            eventually(Duration.ofSeconds(5), () -> changes.count() == changesBefore + 1);
+
+            RegisterResponse bobSession = bobApi.register("Same_Bob");
+            AtomicClientStateStore bobStore = new AtomicClientStateStore(bobWorkspace);
+            bob = new SyncCoordinator(
+                    bobWorkspace, bobApi, bobSession::sessionId, bobStore,
+                    ClientState.empty("Same_Bob"));
+            bob.start(bobSession.currentGlobalVersion(), ignored -> { });
+            SyncCoordinator activeBob = bob;
+
+            eventually(Duration.ofSeconds(5), () ->
+                    activeBob.state().lastSeenGlobalVersion()
+                            >= bobSession.currentGlobalVersion());
+
+            assertEquals(0, bobApi.fileChanges.get());
+            assertEquals(changesBefore + 1, changes.count());
+        } finally {
+            alice.close();
+            if (bob != null) {
+                bob.close();
+            }
         }
     }
 
