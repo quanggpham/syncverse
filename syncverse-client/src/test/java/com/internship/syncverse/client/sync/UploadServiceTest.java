@@ -7,6 +7,7 @@ import com.internship.syncverse.client.state.ClientState;
 import com.internship.syncverse.client.state.PendingOperation;
 import com.internship.syncverse.common.dto.FileChangeRequest;
 import com.internship.syncverse.common.dto.FileChangeResponse;
+import com.internship.syncverse.common.dto.DeltaResponse;
 import com.internship.syncverse.common.dto.RegisterResponse;
 import com.internship.syncverse.common.protocol.ChangeOutcome;
 import com.internship.syncverse.common.protocol.FileOperation;
@@ -90,6 +91,11 @@ class UploadServiceTest {
 
         @Override
         public void heartbeat(UUID sessionId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public DeltaResponse deltas(UUID sessionId, long since) {
             throw new UnsupportedOperationException();
         }
     }

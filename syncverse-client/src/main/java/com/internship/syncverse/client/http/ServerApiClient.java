@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.internship.syncverse.common.dto.HeartbeatRequest;
 import com.internship.syncverse.common.dto.FileChangeRequest;
 import com.internship.syncverse.common.dto.FileChangeResponse;
+import com.internship.syncverse.common.dto.DeltaResponse;
 import com.internship.syncverse.common.dto.ReconnectRequest;
 import com.internship.syncverse.common.dto.RegisterRequest;
 import com.internship.syncverse.common.dto.RegisterResponse;
@@ -26,6 +27,8 @@ public interface ServerApiClient {
     void heartbeat(UUID sessionId) throws ServerApiException;
 
     FileChangeResponse fileChange(FileChangeRequest request) throws ServerApiException;
+
+    DeltaResponse deltas(UUID sessionId, long since) throws ServerApiException;
 
     static ServerApiClient http(URI serverUri) {
         return new JdkServerApiClient(serverUri);
@@ -68,6 +71,26 @@ final class JdkServerApiClient implements ServerApiClient {
     public FileChangeResponse fileChange(FileChangeRequest request)
             throws ServerApiException {
         return post("/api/files/changes", request, 200, FileChangeResponse.class);
+    }
+
+    @Override
+    public DeltaResponse deltas(UUID sessionId, long since) throws ServerApiException {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(serverUri.resolve(
+                            "/api/deltas?since=" + since))
+                    .header("X-Session-Id", sessionId.toString())
+                    .GET()
+                    .build();
+            HttpResponse<String> response = httpClient.send(
+                    request, HttpResponse.BodyHandlers.ofString());
+            requireStatus(response, 200);
+            return objectMapper.readValue(response.body(), DeltaResponse.class);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw ServerApiException.retryable("Delta request interrupted", exception);
+        } catch (IOException exception) {
+            throw ServerApiException.retryable("Cannot reach SyncVerse server", exception);
+        }
     }
 
     private <T> T post(String path, Object body, int expectedStatus, Class<T> responseType)

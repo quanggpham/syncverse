@@ -5,6 +5,7 @@ import com.internship.syncverse.client.http.ServerApiException;
 import com.internship.syncverse.common.dto.RegisterResponse;
 import com.internship.syncverse.common.dto.FileChangeRequest;
 import com.internship.syncverse.common.dto.FileChangeResponse;
+import com.internship.syncverse.common.dto.DeltaResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -124,6 +125,11 @@ class ConnectionManagerTest {
 
         @Override
         public FileChangeResponse fileChange(FileChangeRequest request) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public DeltaResponse deltas(UUID sessionId, long since) {
             throw new UnsupportedOperationException();
         }
     }
