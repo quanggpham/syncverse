@@ -14,6 +14,7 @@ import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -113,6 +114,23 @@ class ConnectionManagerTest {
         manager.shutdown();
     }
 
+    @Test
+    void returningClientReconnectsFromItsPersistedCursor() {
+        FakeServerApi api = new FakeServerApi();
+        AtomicLong cursor = new AtomicLong(37);
+        ConnectionManager manager = new ConnectionManager(
+                api, "Alice_Node", scheduler, Duration.ofDays(1),
+                () -> { }, cursor::get);
+
+        manager.start();
+
+        assertEquals(0, api.registerCalls);
+        assertEquals(1, api.reconnectCalls);
+        assertEquals(37, api.reconnectCursor);
+        assertEquals(ClientMode.RECONCILING, manager.mode());
+        manager.shutdown();
+    }
+
     private ConnectionManager manager(ServerApiClient api) {
         return new ConnectionManager(
                 api, "Alice_Node", scheduler, Duration.ofDays(1));
@@ -122,9 +140,13 @@ class ConnectionManagerTest {
         private final UUID registeredSession = UUID.randomUUID();
         private boolean failRegister;
         private boolean failHeartbeat;
+        private int registerCalls;
+        private int reconnectCalls;
+        private long reconnectCursor;
 
         @Override
         public RegisterResponse register(String clientName) throws ServerApiException {
+            registerCalls++;
             if (failRegister) {
                 throw ServerApiException.retryable("server unavailable");
             }
@@ -133,6 +155,8 @@ class ConnectionManagerTest {
 
         @Override
         public RegisterResponse reconnect(String clientName, long lastSeenGlobalVersion) {
+            reconnectCalls++;
+            reconnectCursor = lastSeenGlobalVersion;
             return new RegisterResponse(clientName, UUID.randomUUID(), lastSeenGlobalVersion);
         }
 

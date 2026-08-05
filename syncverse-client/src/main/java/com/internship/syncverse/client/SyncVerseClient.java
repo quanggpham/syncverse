@@ -46,6 +46,12 @@ public final class SyncVerseClient {
                     } catch (Exception exception) {
                         throw new IllegalStateException("Cannot start synchronization", exception);
                     }
+                },
+                () -> {
+                    SyncCoordinator current = coordinatorReference.get();
+                    return current == null
+                            ? state.lastSeenGlobalVersion()
+                            : current.state().lastSeenGlobalVersion();
                 });
 
         SyncCoordinator coordinator = new SyncCoordinator(

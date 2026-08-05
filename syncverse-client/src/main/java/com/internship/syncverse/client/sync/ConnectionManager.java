@@ -9,6 +9,7 @@ import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 public final class ConnectionManager {
 
@@ -17,6 +18,7 @@ public final class ConnectionManager {
     private final ScheduledExecutorService scheduler;
     private final Duration heartbeatInterval;
     private final Runnable firstSessionAvailable;
+    private final LongSupplier persistedCursor;
     private final RetryPolicy retryPolicy = RetryPolicy.exponential(
             Duration.ofSeconds(1), Duration.ofSeconds(30));
 
@@ -31,7 +33,7 @@ public final class ConnectionManager {
             String clientName,
             ScheduledExecutorService scheduler,
             Duration heartbeatInterval) {
-        this(serverApi, clientName, scheduler, heartbeatInterval, () -> { });
+        this(serverApi, clientName, scheduler, heartbeatInterval, () -> { }, null);
     }
 
     public ConnectionManager(
@@ -40,11 +42,25 @@ public final class ConnectionManager {
             ScheduledExecutorService scheduler,
             Duration heartbeatInterval,
             Runnable firstSessionAvailable) {
+        this(serverApi, clientName, scheduler, heartbeatInterval,
+                firstSessionAvailable, null);
+    }
+
+    public ConnectionManager(
+            ServerApiClient serverApi,
+            String clientName,
+            ScheduledExecutorService scheduler,
+            Duration heartbeatInterval,
+            Runnable firstSessionAvailable,
+            LongSupplier persistedCursor) {
         this.serverApi = serverApi;
         this.clientName = clientName;
         this.scheduler = scheduler;
         this.heartbeatInterval = heartbeatInterval;
         this.firstSessionAvailable = firstSessionAvailable;
+        this.persistedCursor = persistedCursor == null
+                ? () -> lastSeenGlobalVersion
+                : persistedCursor;
         if (heartbeatInterval.isZero() || heartbeatInterval.isNegative()) {
             throw new IllegalArgumentException("Heartbeat interval must be positive");
         }
@@ -55,7 +71,12 @@ public final class ConnectionManager {
             throw new IllegalStateException("Connection manager has already started");
         }
         try {
-            accept(serverApi.register(clientName), ClientMode.ONLINE);
+            long cursor = persistedCursor.getAsLong();
+            if (cursor == 0) {
+                accept(serverApi.register(clientName), ClientMode.ONLINE);
+            } else {
+                accept(serverApi.reconnect(clientName, cursor), ClientMode.RECONCILING);
+            }
         } catch (ServerApiException exception) {
             handleFailure(exception);
         }
@@ -115,7 +136,7 @@ public final class ConnectionManager {
 
     private void reconnect() {
         try {
-            accept(serverApi.reconnect(clientName, lastSeenGlobalVersion),
+            accept(serverApi.reconnect(clientName, persistedCursor.getAsLong()),
                     ClientMode.RECONCILING);
             consecutiveFailures = 0;
         } catch (ServerApiException exception) {

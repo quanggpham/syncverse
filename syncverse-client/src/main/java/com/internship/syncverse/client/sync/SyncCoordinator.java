@@ -145,12 +145,14 @@ public final class SyncCoordinator implements AutoCloseable {
             snapshot = scanner.snapshot(filename).orElse(null);
         }
         FileManifestEntry entry = state.manifest().get(filename);
-        if (snapshot != null && entry != null && !entry.deleted()
-                && Objects.equals(entry.checksum(), snapshot.checksum())) {
+        ReconciliationAction decision = Reconciler.reconcile(
+                entry, snapshot, manifestRevision(filename, entry));
+        if (decision.kind() == ReconciliationAction.Kind.NO_OP) {
             return;
         }
-        if (snapshot == null && (entry == null || entry.deleted())) {
-            return;
+        if (decision.kind() != ReconciliationAction.Kind.UPLOAD_LOCAL) {
+            throw new IllegalStateException(
+                    "Live local reconciliation produced " + decision.kind());
         }
 
         FileOperation operation;
@@ -165,7 +167,7 @@ public final class SyncCoordinator implements AutoCloseable {
             checksum = snapshot.checksum();
             content = Base64.getEncoder().encodeToString(snapshot.content());
         }
-        long baseVersion = entry == null ? 0 : entry.fileVersion();
+        long baseVersion = decision.fileVersion();
         String fingerprint = fingerprint(operation, checksum);
         if (Objects.equals(permanentRejections.get(filename), fingerprint)) {
             return;
@@ -271,6 +273,21 @@ public final class SyncCoordinator implements AutoCloseable {
 
     private static String fingerprint(FileOperation operation, String checksum) {
         return operation.name() + ':' + Objects.toString(checksum, "");
+    }
+
+    private static FileRevision manifestRevision(
+            String filename, FileManifestEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        return new FileRevision(
+                entry.fileVersion(),
+                filename,
+                entry.deleted() ? FileOperation.DELETE : FileOperation.UPDATE,
+                entry.fileVersion(),
+                entry.checksum(),
+                0,
+                null);
     }
 
     @Override
