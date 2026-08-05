@@ -3,6 +3,8 @@ package com.internship.syncverse.server.api;
 import com.internship.syncverse.common.dto.ApiError;
 import com.internship.syncverse.server.session.InvalidClientNameException;
 import com.internship.syncverse.server.session.SessionExpiredException;
+import com.internship.syncverse.server.sync.FileTooLargeException;
+import com.internship.syncverse.server.sync.InvalidFileChangeException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -24,11 +26,17 @@ public final class GlobalExceptionHandler {
     @ExceptionHandler({
             InvalidClientNameException.class,
             InvalidRequestException.class,
+            InvalidFileChangeException.class,
             IllegalArgumentException.class,
             HttpMessageNotReadableException.class
     })
     ResponseEntity<ApiError> invalidRequest(Exception exception) {
         return error(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", exception.getMessage());
+    }
+
+    @ExceptionHandler(FileTooLargeException.class)
+    ResponseEntity<ApiError> fileTooLarge(FileTooLargeException exception) {
+        return error(HttpStatus.CONTENT_TOO_LARGE, "FILE_TOO_LARGE", exception.getMessage());
     }
 
     @ExceptionHandler(SessionExpiredException.class)
