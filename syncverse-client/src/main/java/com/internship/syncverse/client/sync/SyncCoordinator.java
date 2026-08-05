@@ -11,6 +11,7 @@ import com.internship.syncverse.client.state.AtomicClientStateStore;
 import com.internship.syncverse.client.state.ClientState;
 import com.internship.syncverse.client.state.FileManifestEntry;
 import com.internship.syncverse.common.dto.DeltaResponse;
+import com.internship.syncverse.common.dto.FileChangeResponse;
 import com.internship.syncverse.common.dto.FileRevision;
 import com.internship.syncverse.common.protocol.FileOperation;
 import org.slf4j.Logger;
@@ -35,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.BiConsumer;
 
 public final class SyncCoordinator implements AutoCloseable {
 
@@ -54,7 +56,7 @@ public final class SyncCoordinator implements AutoCloseable {
     private Thread pollThread;
     private volatile boolean running;
     private LongSupplier reconciliationTarget;
-    private LongConsumer reconciliationComplete;
+    private BiConsumer<UUID, Long> reconciliationComplete;
 
     public SyncCoordinator(
             Path workspace,
@@ -89,14 +91,16 @@ public final class SyncCoordinator implements AutoCloseable {
     }
 
     public void start() throws Exception {
-        start(() -> state.lastSeenGlobalVersion(), ignored -> { });
+        start(() -> state.lastSeenGlobalVersion(), (session, cursor) -> { });
     }
 
     public void start(long targetGlobalVersion, LongConsumer completion) throws Exception {
-        start(() -> targetGlobalVersion, completion);
+        start(() -> targetGlobalVersion, (session, cursor) -> completion.accept(cursor));
     }
 
-    public void start(LongSupplier targetGlobalVersion, LongConsumer completion) throws Exception {
+    public void start(
+            LongSupplier targetGlobalVersion,
+            BiConsumer<UUID, Long> completion) throws Exception {
         if (serverApi == null || running) {
             throw new IllegalStateException("Sync coordinator cannot be started in this state");
         }
@@ -148,14 +152,16 @@ public final class SyncCoordinator implements AutoCloseable {
 
     private void reconcileSession(long targetGlobalVersion) throws Exception {
         syncExecutor.submit(() -> {
-            retryPending();
-            return null;
-        }).get();
-        Map<String, FileSnapshot> local = syncExecutor.submit(scanner::scan).get();
-        ClientState base = state;
-        List<FileRevision> revisions = fetchThrough(targetGlobalVersion);
-        syncExecutor.submit(() -> {
-            reconcile(base, local, revisions);
+            PendingRetry retry = retryPending();
+            ClientState base = state;
+            List<FileRevision> revisions = fetchThrough(targetGlobalVersion);
+            Map<String, FileSnapshot> latestLocal = new HashMap<>(scanner.scan());
+            if (retry != null
+                    && !retry.operation().filename().equals(
+                    retry.response().acceptedFilename())) {
+                latestLocal.remove(retry.operation().filename());
+            }
+            reconcile(base, latestLocal, revisions);
             return null;
         }).get();
     }
@@ -265,11 +271,13 @@ public final class SyncCoordinator implements AutoCloseable {
         state = recorded;
     }
 
-    private void retryPending() throws Exception {
+    private PendingRetry retryPending() throws Exception {
         PendingOperation pending = state.pendingOperation();
         if (pending != null) {
-            submitUpload(pending);
+            FileChangeResponse response = submitUpload(pending);
+            return response == null ? null : new PendingRetry(pending, response);
         }
+        return null;
     }
 
     private void handleLocal(String filename, FileSnapshot knownSnapshot) throws Exception {
@@ -311,17 +319,20 @@ public final class SyncCoordinator implements AutoCloseable {
                 UUID.randomUUID(), filename, operation, baseVersion, checksum, content));
     }
 
-    private void submitUpload(PendingOperation operation) throws Exception {
+    private FileChangeResponse submitUpload(PendingOperation operation) throws Exception {
         try {
-            state = uploads.submit(requireSession(), state, operation);
+            UploadResult result = uploads.submitWithResponse(
+                    requireSession(), state, operation);
+            state = result.state();
             permanentRejections.remove(operation.filename());
+            return result.response();
         } catch (ServerApiException exception) {
             state = stateStore.load().orElse(state);
             if (exception.kind() == ServerApiException.Kind.PERMANENT) {
                 permanentRejections.put(operation.filename(),
                         fingerprint(operation.operation(), operation.checksum()));
                 LOGGER.warn("Server permanently rejected local file {}", operation.filename(), exception);
-                return;
+                return null;
             }
             dirty.add(operation.filename());
             throw exception;
@@ -377,7 +388,11 @@ public final class SyncCoordinator implements AutoCloseable {
                 UUID currentSession = requireSession();
                 if (!currentSession.equals(reconciledSession)) {
                     reconcileSession(reconciliationTarget.getAsLong());
-                    reconciliationComplete.accept(state.lastSeenGlobalVersion());
+                    if (!currentSession.equals(requireSession())) {
+                        continue;
+                    }
+                    reconciliationComplete.accept(
+                            currentSession, state.lastSeenGlobalVersion());
                     reconciledSession = currentSession;
                     syncExecutor.submit(this::drainDirty);
                 }
@@ -453,6 +468,9 @@ public final class SyncCoordinator implements AutoCloseable {
             syncExecutor.shutdownNow();
         }
     }
+}
+
+record PendingRetry(PendingOperation operation, FileChangeResponse response) {
 }
 
 @FunctionalInterface

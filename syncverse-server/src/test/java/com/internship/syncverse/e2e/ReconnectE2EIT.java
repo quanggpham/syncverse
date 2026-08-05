@@ -25,6 +25,8 @@ import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -199,6 +201,122 @@ class ReconnectE2EIT {
         }
     }
 
+    @Test
+    void droppedConflictResponseDoesNotCreateSecondConflictAfterRestart()
+            throws Exception {
+        String filename = "lost-conflict.txt";
+        Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("lost-alice"));
+        Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("lost-bob"));
+        Files.writeString(aliceWorkspace.resolve(filename), "base");
+        CountingApi aliceApi = new CountingApi(httpApi());
+        CountingApi bobApi = new CountingApi(httpApi());
+        RegisterResponse aliceSession = aliceApi.register("LostConflict_Alice");
+        RegisterResponse bobSession = bobApi.register("LostConflict_Bob");
+        AtomicClientStateStore bobStore = new AtomicClientStateStore(bobWorkspace);
+        SyncCoordinator alice = coordinator(
+                aliceWorkspace, aliceApi, aliceSession, "LostConflict_Alice");
+        SyncCoordinator bob = new SyncCoordinator(
+                bobWorkspace, bobApi, bobSession::sessionId, bobStore,
+                ClientState.empty("LostConflict_Bob"));
+        SyncCoordinator firstRecovery = null;
+        SyncCoordinator secondRecovery = null;
+        try {
+            alice.start();
+            bob.start();
+            eventually(Duration.ofSeconds(5), () -> Files.exists(bobWorkspace.resolve(filename)));
+            bob.close();
+
+            long changesBeforeAliceUpdate = changes.count();
+            Files.writeString(aliceWorkspace.resolve(filename), "alice-new");
+            eventually(Duration.ofSeconds(5), () ->
+                    aliceApi.fileChanges.get() == 2
+                            && changes.count() == changesBeforeAliceUpdate + 1);
+            Files.writeString(bobWorkspace.resolve(filename), "bob-new");
+            long changesBeforeConflict = changes.count();
+            long receiptsBeforeConflict = receipts.count();
+
+            ClientState offline = bobStore.load().orElseThrow();
+            DropFirstResponseApi droppingApi = new DropFirstResponseApi(httpApi());
+            RegisterResponse firstSession = droppingApi.reconnect(
+                    "LostConflict_Bob", offline.lastSeenGlobalVersion());
+            firstRecovery = new SyncCoordinator(
+                    bobWorkspace, droppingApi, firstSession::sessionId, bobStore, offline);
+            firstRecovery.start(firstSession.currentGlobalVersion(), ignored -> { });
+            eventually(Duration.ofSeconds(5), () ->
+                    droppingApi.attempts.get() == 1
+                            && bobStore.load().orElseThrow().pendingOperation() != null);
+            firstRecovery.close();
+
+            ClientState pending = bobStore.load().orElseThrow();
+            UUID operationId = pending.pendingOperation().operationId();
+            CountingApi recoveredApi = new CountingApi(httpApi());
+            RegisterResponse recoveredSession = recoveredApi.reconnect(
+                    "LostConflict_Bob", pending.lastSeenGlobalVersion());
+            secondRecovery = new SyncCoordinator(
+                    bobWorkspace, recoveredApi, recoveredSession::sessionId, bobStore, pending);
+            secondRecovery.start(recoveredSession.currentGlobalVersion(), ignored -> { });
+            SyncCoordinator active = secondRecovery;
+            eventually(Duration.ofSeconds(5), () ->
+                    active.state().pendingOperation() == null
+                            && Files.readString(bobWorkspace.resolve(filename)).equals("alice-new")
+                            && "bob-new".equals(conflictContent(bobWorkspace)));
+
+            assertEquals(1, recoveredApi.fileChanges.get());
+            assertTrue(receipts.find(operationId).isPresent());
+            assertEquals(changesBeforeConflict + 1, changes.count());
+            assertEquals(receiptsBeforeConflict + 1, receipts.count());
+        } finally {
+            alice.close();
+            bob.close();
+            if (firstRecovery != null) {
+                firstRecovery.close();
+            }
+            if (secondRecovery != null) {
+                secondRecovery.close();
+            }
+        }
+    }
+
+    @Test
+    void editDuringDeltaFetchIsReconciledFromLatestLocalBytes() throws Exception {
+        String filename = "during-fetch.txt";
+        long changesBefore = changes.count();
+        Path aliceWorkspace = Files.createDirectory(temporaryDirectory.resolve("barrier-alice"));
+        Path bobWorkspace = Files.createDirectory(temporaryDirectory.resolve("barrier-bob"));
+        Files.writeString(aliceWorkspace.resolve(filename), "server-bytes");
+        Files.writeString(bobWorkspace.resolve(filename), "before-fetch");
+        CountingApi aliceApi = new CountingApi(httpApi());
+        RegisterResponse aliceSession = aliceApi.register("Barrier_Alice");
+        SyncCoordinator alice = coordinator(
+                aliceWorkspace, aliceApi, aliceSession, "Barrier_Alice");
+        SyncCoordinator bob = null;
+        try {
+            alice.start();
+            eventually(Duration.ofSeconds(5), () -> changes.count() == changesBefore + 1);
+
+            BlockingFirstDeltaApi bobApi = new BlockingFirstDeltaApi(httpApi());
+            RegisterResponse bobSession = bobApi.register("Barrier_Bob");
+            AtomicClientStateStore store = new AtomicClientStateStore(bobWorkspace);
+            bob = new SyncCoordinator(
+                    bobWorkspace, bobApi, bobSession::sessionId, store,
+                    ClientState.empty("Barrier_Bob"));
+            bob.start(bobSession.currentGlobalVersion(), ignored -> { });
+            assertTrue(bobApi.entered.await(5, TimeUnit.SECONDS));
+            Files.writeString(bobWorkspace.resolve(filename), "during-fetch");
+            bobApi.release.countDown();
+
+            eventually(Duration.ofSeconds(5), () ->
+                    Files.readString(bobWorkspace.resolve(filename)).equals("server-bytes")
+                            && "during-fetch".equals(conflictContent(bobWorkspace)));
+            assertEquals(1, bobApi.fileChangeCount());
+        } finally {
+            alice.close();
+            if (bob != null) {
+                bob.close();
+            }
+        }
+    }
+
     private SyncCoordinator coordinator(
             Path workspace, ServerApiClient api, RegisterResponse registration, String clientName) {
         AtomicClientStateStore store = new AtomicClientStateStore(workspace);
@@ -208,6 +326,15 @@ class ReconnectE2EIT {
 
     private ServerApiClient httpApi() {
         return ServerApiClient.http(URI.create("http://localhost:" + port));
+    }
+
+    private static String conflictContent(Path workspace) throws Exception {
+        try (var files = Files.list(workspace)) {
+            var conflict = files.filter(path -> path.getFileName().toString()
+                            .contains(".conflict-"))
+                    .findFirst();
+            return conflict.isPresent() ? Files.readString(conflict.orElseThrow()) : null;
+        }
     }
 
     private static void eventually(Duration timeout, CheckedCondition condition) throws Exception {
@@ -232,6 +359,10 @@ class ReconnectE2EIT {
 
         private CountingApi(ServerApiClient delegate) {
             this.delegate = delegate;
+        }
+
+        final int fileChangeCount() {
+            return fileChanges.get();
         }
 
         @Override
@@ -280,6 +411,30 @@ class ReconnectE2EIT {
                 throw ServerApiException.retryable("simulated response loss");
             }
             return response;
+        }
+    }
+
+    private static final class BlockingFirstDeltaApi extends CountingApi {
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicBoolean first = new AtomicBoolean(true);
+
+        private BlockingFirstDeltaApi(ServerApiClient delegate) {
+            super(delegate);
+        }
+
+        @Override
+        public DeltaResponse deltas(UUID sessionId, long since) throws ServerApiException {
+            if (first.compareAndSet(true, false)) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw ServerApiException.retryable("blocked delta interrupted", exception);
+                }
+            }
+            return super.deltas(sessionId, since);
         }
     }
 }

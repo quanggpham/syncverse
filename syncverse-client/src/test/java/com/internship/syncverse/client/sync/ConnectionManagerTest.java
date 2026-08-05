@@ -164,6 +164,29 @@ class ConnectionManagerTest {
         manager.shutdown();
     }
 
+    @Test
+    void staleSessionCannotCompleteReplacementSession() {
+        FakeServerApi api = new FakeServerApi();
+        ConnectionManager manager = new ConnectionManager(
+                api, "Alice_Node", scheduler, Duration.ofDays(1),
+                () -> { }, () -> 9, true);
+        manager.start();
+        UUID firstSession = manager.sessionId();
+        api.failHeartbeat = true;
+        manager.tick();
+        api.failHeartbeat = false;
+        manager.tick();
+        UUID replacementSession = manager.sessionId();
+
+        manager.reconciliationComplete(firstSession, 9);
+
+        assertNotEquals(firstSession, replacementSession);
+        assertEquals(ClientMode.RECONCILING, manager.mode());
+        manager.reconciliationComplete(replacementSession, 9);
+        assertEquals(ClientMode.ONLINE, manager.mode());
+        manager.shutdown();
+    }
+
     private ConnectionManager manager(ServerApiClient api) {
         return new ConnectionManager(
                 api, "Alice_Node", scheduler, Duration.ofDays(1));

@@ -27,6 +27,12 @@ public final class UploadService {
     public ClientState submit(
             UUID sessionId, ClientState state, PendingOperation operation)
             throws IOException, ServerApiException {
+        return submitWithResponse(sessionId, state, operation).state();
+    }
+
+    UploadResult submitWithResponse(
+            UUID sessionId, ClientState state, PendingOperation operation)
+            throws IOException, ServerApiException {
         if (state.pendingOperation() != null
                 && !state.pendingOperation().equals(operation)) {
             throw new IllegalStateException("A different upload operation is already pending");
@@ -66,7 +72,7 @@ public final class UploadService {
                 manifest,
                 null);
         stateStore.save(acknowledged);
-        return acknowledged;
+        return new UploadResult(acknowledged, response);
     }
 
     private static ClientState withoutPending(ClientState state) {
@@ -74,4 +80,7 @@ public final class UploadService {
                 state.formatVersion(), state.clientName(), state.lastSeenGlobalVersion(),
                 state.manifest(), null);
     }
+}
+
+record UploadResult(ClientState state, FileChangeResponse response) {
 }

@@ -6,6 +6,7 @@ import com.internship.syncverse.common.dto.RegisterResponse;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -111,8 +112,14 @@ public final class ConnectionManager {
     }
 
     public synchronized void reconciliationComplete(long latestGlobalVersion) {
-        if (mode != ClientMode.RECONCILING) {
-            throw new IllegalStateException("Client is not reconciling");
+        reconciliationComplete(sessionId, latestGlobalVersion);
+    }
+
+    public synchronized void reconciliationComplete(
+            UUID expectedSessionId, long latestGlobalVersion) {
+        if (!Objects.equals(sessionId, expectedSessionId)
+                || mode != ClientMode.RECONCILING) {
+            return;
         }
         lastSeenGlobalVersion = latestGlobalVersion;
         mode = ClientMode.ONLINE;
