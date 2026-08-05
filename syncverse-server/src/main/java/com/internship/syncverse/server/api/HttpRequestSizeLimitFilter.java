@@ -17,10 +17,9 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
-import java.util.UUID;
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public final class HttpRequestSizeLimitFilter extends OncePerRequestFilter {
 
     static final int MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -52,12 +51,14 @@ public final class HttpRequestSizeLimitFilter extends OncePerRequestFilter {
     }
 
     private void writeTooLarge(HttpServletResponse response) throws IOException {
+        String requestId = org.slf4j.MDC.get(RequestIdFilter.MDC_KEY);
+        response.setHeader(RequestIdFilter.HEADER, requestId);
         response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.getWriter().write("{\"code\":\"FILE_TOO_LARGE\","
                 + "\"message\":\"HTTP request body exceeds 2,097,152 bytes\","
-                + "\"requestId\":\"" + UUID.randomUUID() + "\","
+                + "\"requestId\":\"" + requestId + "\","
                 + "\"timestamp\":\"" + clock.instant() + "\"}");
     }
 

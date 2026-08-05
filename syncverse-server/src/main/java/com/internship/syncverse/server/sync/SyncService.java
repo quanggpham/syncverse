@@ -15,6 +15,8 @@ import com.internship.syncverse.server.session.SessionService;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -23,6 +25,8 @@ import java.util.Optional;
 
 @Service
 public final class SyncService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SyncService.class);
 
     private final SessionService sessions;
     private final FileStateRepository files;
@@ -84,6 +88,12 @@ public final class SyncService {
             if (response.globalVersion() != null) {
                 notifier.signalCommitted(response.globalVersion());
             }
+            LOGGER.info(
+                    "File change client={} operationId={} requested={} accepted={} outcome={} "
+                            + "baseVersion={} fileVersion={} globalVersion={}",
+                    session.clientName(), request.operationId(), request.filename(),
+                    response.acceptedFilename(), response.outcome(), request.baseFileVersion(),
+                    response.fileVersion(), response.globalVersion());
             return response;
         });
     }
