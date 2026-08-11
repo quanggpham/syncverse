@@ -87,20 +87,20 @@ mvn package -pl syncverse-client -am
 **Start Server:**
 
 ```bash
-java -jar syncverse-server/target/syncverse-server-1.0.0.jar AlphaServer
+java -jar syncverse-server/target/server.jar AlphaServer
 ```
 
 **Start Clients (each in its own terminal):**
 
 ```bash
 # Terminal 1
-java -jar syncverse-client/target/syncverse-client-1.0.0.jar Alice_Node ./workspace_alice
+java -jar syncverse-client/target/client.jar Alice_Node ./workspace_alice
 
 # Terminal 2
-java -jar syncverse-client/target/syncverse-client-1.0.0.jar Bob_Node ./workspace_bob
+java -jar syncverse-client/target/client.jar Bob_Node ./workspace_bob
 
 # Terminal 3
-java -jar syncverse-client/target/syncverse-client-1.0.0.jar Charlie_Node ./workspace_charlie
+java -jar syncverse-client/target/client.jar Charlie_Node ./workspace_charlie
 ```
 
 ## 📁 Project Structure

@@ -42,6 +42,7 @@ public final class GlobalExceptionHandler {
         Throwable cause = exception;
         while (cause != null) {
             if (cause instanceof RequestBodyTooLargeException) {
+                LOGGER.warn("Rejected request: payload size exceeds max limit (2MB HTTP cap)");
                 return error(HttpStatus.CONTENT_TOO_LARGE, "FILE_TOO_LARGE", cause.getMessage());
             }
             cause = cause.getCause();
@@ -51,6 +52,7 @@ public final class GlobalExceptionHandler {
 
     @ExceptionHandler(FileTooLargeException.class)
     ResponseEntity<ApiError> fileTooLarge(FileTooLargeException exception) {
+        LOGGER.warn("Rejected file upload exceeding 1MB cap: {}", exception.getMessage());
         return error(HttpStatus.CONTENT_TOO_LARGE, "FILE_TOO_LARGE", exception.getMessage());
     }
 

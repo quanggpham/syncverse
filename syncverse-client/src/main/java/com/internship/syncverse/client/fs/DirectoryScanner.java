@@ -11,8 +11,12 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Stream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public final class DirectoryScanner {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DirectoryScanner.class);
     public static final int MAX_FILE_BYTES = 1_048_576;
 
     private final Path workspace;
@@ -36,14 +40,24 @@ public final class DirectoryScanner {
     }
 
     private java.util.Optional<FileSnapshot> snapshot(Path path) throws IOException {
-        if (!path.getParent().equals(workspace)
-                || Files.isSymbolicLink(path)
-                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
-                || Files.size(path) > MAX_FILE_BYTES) {
+        if (!path.getParent().equals(workspace)) {
+            return java.util.Optional.empty();
+        }
+        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            LOGGER.info("Skipping subdirectory '{}' (SyncVerse only supports flat directories)", path.getFileName());
+            return java.util.Optional.empty();
+        }
+        if (Files.isSymbolicLink(path) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            LOGGER.info("Skipping non-regular file or symbolic link '{}'", path.getFileName());
+            return java.util.Optional.empty();
+        }
+        if (Files.size(path) > MAX_FILE_BYTES) {
+            LOGGER.warn("Skipping file '{}' (size {} bytes exceeds 1MB cap)", path.getFileName(), Files.size(path));
             return java.util.Optional.empty();
         }
         byte[] content = Files.readAllBytes(path);
         if (content.length > MAX_FILE_BYTES) {
+            LOGGER.warn("Skipping file '{}' (size {} bytes exceeds 1MB cap)", path.getFileName(), content.length);
             return java.util.Optional.empty();
         }
         return java.util.Optional.of(new FileSnapshot(

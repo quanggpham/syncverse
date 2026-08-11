@@ -25,3 +25,10 @@ Thumbs.db
 
 # Local implementation worktrees
 .worktrees/
+
+# Runtime test data & workspaces
+syncverse-data/
+runtime-data/
+workspace_*/
+*.syncverse-state.json
+

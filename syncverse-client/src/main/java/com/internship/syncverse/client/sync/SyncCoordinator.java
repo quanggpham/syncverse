@@ -280,6 +280,8 @@ public final class SyncCoordinator implements AutoCloseable {
         if (revision == null) {
             return;
         }
+        LOGGER.info("Applying remote file change: filename={} operation={} version={} globalVersion={}",
+                revision.filename(), revision.operation(), revision.fileVersion(), revision.globalVersion());
         state = revisionApplier.apply(state, revision);
     }
 
@@ -348,10 +350,14 @@ public final class SyncCoordinator implements AutoCloseable {
 
     private FileChangeResponse submitUpload(PendingOperation operation) throws Exception {
         try {
+            LOGGER.info("Uploading local change: filename={} operation={} baseFileVersion={}",
+                    operation.filename(), operation.operation(), operation.baseFileVersion());
             UploadResult result = uploads.submitWithResponse(
                     requireSession(), state, operation);
             state = result.state();
             permanentRejections.remove(operation.filename());
+            LOGGER.info("Uploaded change accepted: filename={} outcome={} globalVersion={}",
+                    operation.filename(), result.response().outcome(), result.response().globalVersion());
             return result.response();
         } catch (ServerApiException exception) {
             state = stateStore.load().orElse(state);
