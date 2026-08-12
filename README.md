@@ -1,14 +1,13 @@
-# SyncVerse 🔄 — Lightweight Enterprise File Sync
+# SyncVerse — Lightweight Enterprise File Sync
 
 [![Java](https://img.shields.io/badge/Java-17-%23ED8B00)](https://openjdk.org/)
 [![Maven](https://img.shields.io/badge/Maven-3.9+-C71A36)](https://maven.apache.org/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 A zero-config file synchronization system for enterprise environments. SyncVerse keeps files in sync across multiple workstations using a **Central Server** and **lightweight CLI daemons** — with zero open ports on client machines.
 
 > **The challenge:** Traditional file sync requires open ports or complex NAT/Firewall configuration. SyncVerse solves this with an HTTP RESTful polling architecture — clients never serve, only request.
 
-## ✨ Features
+## Features
 
 | Feature | Description |
 |---------|-------------|
@@ -20,7 +19,7 @@ A zero-config file synchronization system for enterprise environments. SyncVerse
 | **File Size Cap** | Each file ≤ 1MB for efficient transfer |
 | **Dual JAR** | `server.jar` + `client.jar` — independent, modular deployment |
 
-## 🏗 Architecture
+## Architecture
 
 ```
 ┌──────────────┐     HELLO / HEARTBEAT      ┌──────────────┐
@@ -64,7 +63,7 @@ Client crashes ──► Reconnects ──► Sends RECONNECT
                           Local folder fully synced
 ```
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -103,7 +102,7 @@ java -jar syncverse-client/target/client.jar Bob_Node ./workspace_bob
 java -jar syncverse-client/target/client.jar Charlie_Node ./workspace_charlie
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 syncverse-server/        # Central coordination server
